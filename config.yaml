@@ -1,0 +1,13 @@
+# Raw data
+RAW_DATA_PATH: 'data/raw'
+RRN_DATA_PATH: 'data/raw/RRN'
+REGIONS_DATA_PATH: 'data/raw/regions'
+TRAFFIC_DATA_PATH: 'data/raw/traffic'
+AIRESPL_DATA_PATH: 'data/raw/airesPL'
+
+rrn_vsmap_file: 'data/raw/RRN/VSMAP_TOUT.shp'
+rrn_bornage_file: 'data/raw/RRN/BORNAGE_TOUT.shp'
+regions_file: 'data/raw/regions/regions_2016.shp'
+traffic_file: 'data/raw/traffic/TMJA2018.shp'
+depreg_file: 'data/raw/depreg.csv'
+stations_file: 'data/raw/stations.csv'
