@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import geopandas as gpd
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from selenium import webdriver
 from selenium.common.exceptions import StaleElementReferenceException
@@ -12,6 +14,7 @@ import io
 import os
 import requests
 import time
+from typing import Union
 import yaml
 import zipfile
 
@@ -35,6 +38,71 @@ class Data:
         for root, folders, files in os.walk('.'):
             if folder_name in folders:
                 return f'{current_working_directory}{root.lstrip(".")}/{folder_name}'
+
+    @staticmethod
+    def clean_traffic_data(df: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        """This method cleans the traffice data set. The provided DataFrame should be the output of the function
+        load_traffic."""
+        df = df.copy()
+        # Removing 0 traffic records
+        df = df.loc[df['tmja'].values > 0, :]
+        # Since we are only interested in trucks, we remove the records that didn't see any heavy duty vehicles
+        df = df.loc[df['pctPL'].values > 0, :]
+        return df
+
+    @staticmethod
+    def add_regions_to_departments(df: Union[gpd.GeoDataFrame, pd.DataFrame], df_depreg: pd.DataFrame,
+                                   df_department_col: str = 'depPrD') -> Union[gpd.GeoDataFrame, pd.DataFrame]:
+        return df.merge(df_depreg, how='inner', left_on=df_department_col, right_on='num_dep')
+
+    @staticmethod
+    def translate_regions_regions_to_official_names(df_regions: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        """This method translates the region names from the regions DataFrame to names as they are found online and in
+        the depreg DataFrame."""
+        name_mapping = dict()
+        name_mapping['Alsace, Champagne-Ardenne et Lorraine'] = 'Grand Est'
+        name_mapping['Aquitaine, Limousin et Poitou-Charentes'] = 'Nouvelle-Aquitaine'
+        name_mapping['Auvergne et RhÃ´ne-Alpes'] = 'Auvergne-Rhône-Alpes'
+        name_mapping['Basse-Normandie et Haute-Normandie'] = 'Normandie'
+        name_mapping['Bourgogne et Franche-ComtÃ©'] = 'Bourgogne-Franche-Comté'
+        name_mapping['Bretagne'] = 'Bretagne'
+        name_mapping['Centre'] = 'Centre-Val de Loire'
+        name_mapping['Corse'] = 'Corse'
+        name_mapping['Ile-de-France'] = 'Île-de-France'
+        name_mapping['Languedoc-Roussillon et Midi-PyrÃ©nÃ©es'] = 'Occitanie'
+        name_mapping['Nord-Pas-de-Calais et Picardie'] = 'Hauts-de-France'
+        name_mapping['Pays de la Loire'] = 'Pays de la Loire'
+        name_mapping["Provence-Alpes-CÃ´te d'Azur"] = "Provence-Alpes-Côte d'Azur"
+        df = df_regions.copy(deep=True)
+        df.loc[:, 'nomnewregi'] = df.loc[:, 'nomnewregi'].apply(lambda x: name_mapping[x])
+        return df
+
+    @staticmethod
+    def translate_depreg_regions_to_regions_regions(df_depreg: pd.DataFrame) -> pd.DataFrame:
+        """This method maps the region names as they are found in the depreg DataFrame to the names as they are found in
+        the regions DataFrame."""
+        name_mapping = dict()
+        name_mapping['Auvergne-Rhône-Alpes'] = 'Auvergne et RhÃ´ne-Alpes'
+        name_mapping['Bourgogne-Franche-Comté'] = 'Bourgogne et Franche-ComtÃ©'
+        name_mapping['Bretagne'] = 'Bretagne'
+        name_mapping['Centre-Val de Loire'] = 'Centre'
+        name_mapping['Corse'] = 'Corse'
+        name_mapping['Grand Est'] = 'Alsace, Champagne-Ardenne et Lorraine'
+        name_mapping['Guadeloupe'] = np.nan
+        name_mapping['Guyane'] = np.nan
+        name_mapping['Hauts-de-France'] = 'Nord-Pas-de-Calais et Picardie'
+        name_mapping['La Réunion'] = np.nan
+        name_mapping['Martinique'] = np.nan
+        name_mapping['Mayotte'] = np.nan
+        name_mapping['Normandie'] = 'Basse-Normandie et Haute-Normandie'
+        name_mapping['Nouvelle-Aquitaine'] = 'Aquitaine, Limousin et Poitou-Charentes'
+        name_mapping['Occitanie'] = 'Languedoc-Roussillon et Midi-PyrÃ©nÃ©es'
+        name_mapping['Pays de la Loire'] = 'Pays de la Loire'
+        name_mapping["Provence-Alpes-Côte d'Azur"] = "Provence-Alpes-CÃ´te d'Azur"
+        name_mapping['Île-de-France'] = 'Ile-de-France'
+        df = df_depreg.copy(deep=True)
+        df.loc[:, 'region_name'] = df.loc[:, 'region_name'].apply(lambda x: name_mapping[x])
+        return df
 
 
 class Download:
@@ -77,6 +145,7 @@ class Download:
 
     @classmethod
     def download_regions_files(cls) -> None:
+        """The regions data comes from the following website: """
         zip_url = 'https://www.data.gouv.fr/fr/datasets/r/5e7b3100-80c3-48ae-9c9f-57b7977e7a69'
         cls.download_zip_file(url=zip_url, target_folder='regions')
         # The files are downloaded with an é in the name, but the original files are with an e -> we change the names
@@ -140,6 +209,15 @@ class Download:
     def download_depreg(cls):
         csv_url = 'https://www.data.gouv.fr/fr/datasets/r/987227fb-dcb2-429e-96af-8979f97c9c84'
         cls.download_csv_file(url=csv_url, target_file='depreg.csv')
+
+
+class Plots:
+    @staticmethod
+    def plot_roads_over_regions(df_traffic: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame) -> None:
+        fig, ax = plt.subplots()
+        df_regions.plot(ax=ax)
+        df_traffic.plot(ax=ax, color='red')
+        plt.show()
 
 
 def load_stations(path: str = None) -> pd.DataFrame:
