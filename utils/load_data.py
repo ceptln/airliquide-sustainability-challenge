@@ -38,7 +38,7 @@ class Data:
 
 
 class Download:
-    raw_data_folder = 'data'
+    raw_data_folder = 'data/raw'
 
     @classmethod
     def download_zip_file(cls, url: str, target_folder: str) -> None:
@@ -135,6 +135,11 @@ class Download:
             os.rename(f'{data_folder_path}/{downloaded_name}', f'{data_folder_path}/stations.csv')
         else:
             raise ValueError('The stations.csv file could not be downloaded')
+
+    @classmethod
+    def download_depreg(cls):
+        csv_url = 'https://www.data.gouv.fr/fr/datasets/r/987227fb-dcb2-429e-96af-8979f97c9c84'
+        cls.download_csv_file(url=csv_url, target_file='depreg.csv')
 
 
 def load_stations(path: str = None) -> pd.DataFrame:
