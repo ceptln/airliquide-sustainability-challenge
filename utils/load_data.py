@@ -19,8 +19,8 @@ import yaml
 import zipfile
 
 
-# with open("../config.yaml") as f:
-#     config = yaml.safe_load(f)
+with open("../config.yaml") as f:
+    config = yaml.safe_load(f)
 
 
 class Data:
@@ -52,6 +52,41 @@ class Data:
         if reset_index:
             df = df.reset_index(drop=True)
         return df
+
+    @staticmethod
+    def _add_truck_traffic(df_traffic: Union[gpd.GeoDataFrame, pd.DataFrame]) -> Union[gpd.GeoDataFrame, pd.DataFrame]:
+        """This method adds a column with the truck traffic, since 'tmja' is the traffic of all vehicles.
+        It is assumed that the df_traffic contains the following columns: 'tmja', 'pctPL'"""
+        df_traffic = df_traffic.copy(deep=True)
+        df_traffic['truck_tmja'] = df_traffic['tmja'] * df_traffic['pctPL'] / 100
+        return df_traffic
+
+    @staticmethod
+    def _convert_pd_stations_to_gpd(df_stations: pd.DataFrame, target_crs: str = 'EPSG:2154') -> gpd.GeoDataFrame:
+        """This method creates a GeoDataFrame from the stations DataFrame."""
+        df_stations = df_stations.copy(deep=True)
+        # Cleaning the coordinates column
+        df_stations['Coordinates'] = df_stations['Coordinates'].str.replace(',,', ',')
+        # Creating the column with shapely Points
+        df_stations[['y', 'x']] = df_stations['Coordinates'].str.split(',', n=1, expand=True)
+        df_stations['geometry'] = gpd.points_from_xy(x=df_stations['x'], y=df_stations['y'])
+        # Converting the DataFrame into a GeoDataFrame
+        gdf_stations = gpd.GeoDataFrame(df_stations, geometry='geometry', crs='EPSG:4326')
+        # Converting the crs to the target_crs
+        gdf_stations = gdf_stations.to_crs(crs=target_crs)
+        # Remove the columns we just created
+        gdf_stations = gdf_stations.drop(columns=['y', 'x'])
+        return gdf_stations
+
+    @staticmethod
+    def limit_gdfs_to_main_land_france(df: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        """This method filters out records from df that contain geometry that is not inside main land France."""
+        df = df.copy(deep=True)
+        df_regions = df_regions.copy(deep=True)
+
+        main_land = df_regions[df_regions['nomnewregi'] != 'Corse']
+        mask = df.loc[:, 'geometry'].apply(lambda x: any(main_land.contains(x)))
+        return df[mask]
 
     @staticmethod
     def add_regions_to_departments(df: Union[gpd.GeoDataFrame, pd.DataFrame], df_depreg: pd.DataFrame,
