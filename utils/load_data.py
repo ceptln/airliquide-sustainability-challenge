@@ -18,6 +18,7 @@ from typing import Union
 import yaml
 import zipfile
 
+
 with open("../config.yaml") as f:
     config = yaml.safe_load(f)
 
@@ -40,7 +41,7 @@ class Data:
                 return f'{current_working_directory}{root.lstrip(".")}/{folder_name}'
 
     @staticmethod
-    def clean_traffic_data(df: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    def clean_traffic_data(df: gpd.GeoDataFrame, reset_index: bool = True) -> gpd.GeoDataFrame:
         """This method cleans the traffice data set. The provided DataFrame should be the output of the function
         load_traffic."""
         df = df.copy()
@@ -48,12 +49,76 @@ class Data:
         df = df.loc[df['tmja'].values > 0, :]
         # Since we are only interested in trucks, we remove the records that didn't see any heavy duty vehicles
         df = df.loc[df['pctPL'].values > 0, :]
+        if reset_index:
+            df = df.reset_index(drop=True)
         return df
 
     @staticmethod
     def add_regions_to_departments(df: Union[gpd.GeoDataFrame, pd.DataFrame], df_depreg: pd.DataFrame,
                                    df_department_col: str = 'depPrD') -> Union[gpd.GeoDataFrame, pd.DataFrame]:
-        return df.merge(df_depreg, how='inner', left_on=df_department_col, right_on='num_dep')
+        """This method can be used to add the region data to e.g. the traffic DataFrame. The matching is done based on
+        the department number."""
+        df = df.copy(deep=True)
+        df = df.merge(df_depreg, how='inner', left_on=df_department_col, right_on='num_dep')
+        useless_columns = ['num_dep', 'dep_name']
+        for column in useless_columns:
+            try:
+                df = df.drop(columns=[column])
+            except KeyError:
+                pass
+        return df
+
+    @staticmethod
+    def add_region_shapes(df: Union[gpd.GeoDataFrame, pd.DataFrame], df_regions: gpd.GeoDataFrame,
+                          df_region_col: str = 'region_name') -> gpd.GeoDataFrame:
+        """This method adds a column with the region shapes based on the regions defined in df_region_col. It is assumed
+        that these names match up with the values in the column nomnewregi in the regions DataFrame."""
+        df = df.copy(deep=True)
+        df_regions = df_regions.copy(deep=True)
+
+        # Get the type of the input DataFrame
+        df_type = type(df)
+        # Add the region shapes to df
+        df = df.merge(df_regions.rename(columns={'geometry': 'region_geometry'}).set_geometry('region_geometry'),
+                      left_on=df_region_col, right_on='nomnewregi', how='inner')
+        if df_type == pd.DataFrame:
+            df = gpd.GeoDataFrame(df, geometry='region_geometry', crs=df_regions.crs)
+
+        # Since we are only interested in the shapes from the regions DataFrame we can get rid of the other column that
+        # came with the regions DataFrame during the merge
+        useless_columns = ['id_newregi', 'nomnewregi']
+        for column in useless_columns:
+            try:
+                df = df.drop(columns=[column])
+            except KeyError:
+                pass
+        return df
+
+    @staticmethod
+    def add_road_section_length_per_region(df: gpd.GeoDataFrame,
+                                           df_regions: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        """This method returns what length of the road section of a record is in what region. It is important to note
+        that the provided lengths in the column 'longueur' deviate from what we would have using the shape lengths
+        however, we normalize the calculated shape lengths and then multiply with 'longueur' thus keeping with the
+        lenghts provided in 'longueur'.
+        df is assumed to contain the following columns: 'geometry', 'longueur'
+        df_regions is assumed to contain the following columns: 'nomnewregi', 'geometry'"""
+        df = df.copy(deep=True)
+        df_regions = df_regions.copy(deep=True)
+        r_with_shapes = df_regions.set_index('nomnewregi')['geometry']
+        df['total_length'] = 0
+        for index, value in r_with_shapes.items():
+            df[index + '_geometry'] = value
+            df = df.set_geometry(col=index + '_geometry')
+            df[index + '_geometry'].crs = df['geometry'].crs
+            df[index + '_intersection'] = df['geometry'].intersection(df[index + '_geometry'])
+            df[index + '_length'] = df[index + '_intersection'].length
+            df = df.drop(columns=[index + '_geometry', index + '_intersection'])
+            df['total_length'] += df[index + '_length']
+
+        for index, value in r_with_shapes.items():
+            df[index + '_length'] = df[index + '_length'] / df['total_length'] * df['longueur']
+        return df.drop(columns=['total_length'])
 
     @staticmethod
     def translate_regions_regions_to_official_names(df_regions: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
