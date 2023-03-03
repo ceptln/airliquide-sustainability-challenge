@@ -19,8 +19,8 @@ import yaml
 import zipfile
 
 
-with open("../config.yaml") as f:
-    config = yaml.safe_load(f)
+# with open("../config.yaml") as f:
+#     config = yaml.safe_load(f)
 
 
 class Data:
@@ -279,9 +279,24 @@ class Download:
 class Plots:
     @staticmethod
     def plot_roads_over_regions(df_traffic: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame) -> None:
+        """This method plots the road network over a map of France."""
         fig, ax = plt.subplots()
         df_regions.plot(ax=ax)
         df_traffic.plot(ax=ax, color='red')
+        ax.set_title('Road network of France')
+        plt.show()
+
+    @staticmethod
+    def plot_traffic_per_region(df_traffic: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame, df_depreg) -> None:
+        """This method maps the total daily traffic per region."""
+        t_with_r = Data.add_regions_to_departments(df_traffic, df_depreg)
+        t_with_r_and_s = Data.add_region_shapes(t_with_r, df_regions).set_geometry('region_geometry')
+        plot_data = t_with_r_and_s.groupby('region_name').agg({'tmja': sum, 'region_geometry': 'first'}).reset_index()
+        plot_data = gpd.GeoDataFrame(plot_data, geometry='region_geometry', crs=df_regions.crs)
+
+        fig, ax = plt.subplots()
+        plot_data.plot(ax=ax, column='tmja', edgecolor='black', legend=True, legend_kwds={'label': 'Traffic per day'})
+        ax.set_title('Daily traffic in France')
         plt.show()
 
 
