@@ -62,6 +62,17 @@ class Data:
         return df_traffic
 
     @staticmethod
+    def _add_weighted_traffic(df_traffic: Union[gpd.GeoDataFrame, pd.DataFrame],
+                              traffic_column: str = 'truck_tmja') -> Union[gpd.GeoDataFrame, pd.DataFrame]:
+        """This method adds a column with 'longueur' / max('longueur') * traffic_column called 'weighted_traffic' to
+        df_traffic.
+        It is assumed that the road length is contained in the column 'longueur'."""
+        df_traffic = df_traffic.copy(deep=True)
+        max_length = df_traffic['longueur'].max()
+        df_traffic['weighted_traffic'] = df_traffic['longueur'] / max_length * df_traffic[traffic_column]
+        return df_traffic
+
+    @staticmethod
     def _convert_pd_stations_to_gpd(df_stations: pd.DataFrame, target_crs: str = 'EPSG:2154') -> gpd.GeoDataFrame:
         """This method creates a GeoDataFrame from the stations DataFrame."""
         df_stations = df_stations.copy(deep=True)
@@ -154,6 +165,22 @@ class Data:
         for index, value in r_with_shapes.items():
             df[index + '_length'] = df[index + '_length'] / df['total_length'] * df['longueur']
         return df.drop(columns=['total_length'])
+
+    @staticmethod
+    def add_buffer_traffic(df_traffic: gpd.GeoDataFrame,
+                           buffer_distance: Union[int, float] = 10000,
+                           traffic_column: str = 'weighted_traffic') -> gpd.GeoDataFrame:
+        """This method adds a column containing the sum of the traffic within the buffer. It is recommended to use
+        'weighted_traffic' as the traffic column (which can be created with _add_weighted_traffic) to not give
+        unreasonable weight to many small road sections.
+        It is assumed that the geometry in df_traffic is contained in the column 'geometry'."""
+        df_traffic = df_traffic.copy(deep=True)
+        buffer_shapes = df_traffic.buffer(distance=buffer_distance)
+        for index, geometry in df_traffic['geometry'].items():
+            mask = buffer_shapes.intersects(geometry)
+            buffer_traffic = df_traffic.loc[mask, traffic_column].sum()
+            df_traffic.loc[index, 'buffer_traffic'] = buffer_traffic
+        return df_traffic
 
     @staticmethod
     def translate_regions_regions_to_official_names(df_regions: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
