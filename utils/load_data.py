@@ -58,7 +58,7 @@ class Data:
         return df
 
     @staticmethod
-    def _add_truck_traffic(df_traffic: Union[gpd.GeoDataFrame, pd.DataFrame]) -> Union[gpd.GeoDataFrame, pd.DataFrame]:
+    def add_truck_traffic(df_traffic: Union[gpd.GeoDataFrame, pd.DataFrame]) -> Union[gpd.GeoDataFrame, pd.DataFrame]:
         """This method adds a column with the truck traffic, since 'tmja' is the traffic of all vehicles.
         It is assumed that the df_traffic contains the following columns: 'tmja', 'pctPL'"""
         df_traffic = df_traffic.copy(deep=True)
@@ -66,8 +66,8 @@ class Data:
         return df_traffic
 
     @staticmethod
-    def _add_weighted_traffic(df_traffic: Union[gpd.GeoDataFrame, pd.DataFrame],
-                              traffic_column: str = 'truck_tmja') -> Union[gpd.GeoDataFrame, pd.DataFrame]:
+    def add_weighted_traffic(df_traffic: Union[gpd.GeoDataFrame, pd.DataFrame],
+                             traffic_column: str = 'truck_tmja') -> Union[gpd.GeoDataFrame, pd.DataFrame]:
         """This method adds a column with 'longueur' / max('longueur') * traffic_column called 'weighted_traffic' to
         df_traffic.
         It is assumed that the road length is contained in the column 'longueur'."""
@@ -187,7 +187,7 @@ class Data:
                            buffer_distance: Union[int, float] = 10000,
                            traffic_column: str = 'weighted_traffic') -> gpd.GeoDataFrame:
         """This method adds a column containing the sum of the traffic within the buffer. It is recommended to use
-        'weighted_traffic' as the traffic column (which can be created with _add_weighted_traffic) to not give
+        'weighted_traffic' as the traffic column (which can be created with add_weighted_traffic) to not give
         unreasonable weight to many small road sections.
         It is assumed that the geometry in df_traffic is contained in the column 'geometry'."""
         df_traffic = df_traffic.copy(deep=True)
@@ -196,6 +196,68 @@ class Data:
             mask = buffer_shapes.intersects(geometry)
             buffer_traffic = df_traffic.loc[mask, traffic_column].sum()
             df_traffic.loc[index, 'buffer_traffic'] = buffer_traffic
+        return df_traffic
+
+    @staticmethod
+    def calculate_h2_distance(n_trucks: int, range_in_km: Union[int, float] = 400) -> Union[int, float]:
+        """This method calculates how much distance n_trucks are assumed to cover in a day. range_in_km determines how
+        far a truck is assumed to travel.
+        We make several assumptions here based on the truck driving regulation of France:
+        Based on the regulation, one driver may, on average, not drive more than 45 hours a week and at most 10 hours in
+        any given day, however, we assume that the trucks are owned by the companies -> they can change drivers once a
+        driver arrived at his/her destination.
+        The average driving speed for a truck is assumed to be 66.9 km/h which based on the information from
+        the provided H2 truck manufacturers should not be a problem (source for the average truck speed:
+        https://www.cnr.fr/download/file/publications/eld%202012.pdf, source for the max speed of H2 trucks:
+        https://www.youtube.com/watch?v=ShgYjFb4Pp8).
+        The radius of France is roughly 419 km -> most routes can be be completed within one shift
+        (https://www.ecologie.gouv.fr/temps-travail-des-conducteurs-routiers-transport-marchandises).
+        The average loading time is assumed ot be 3 hours, the average break time, which has to be taken every
+        4.5 hours, is 45 min, if a tank does not last for the 4.5 hours, an additional 15 minutes are added for
+        refueling which is otherwise assumed to be done during the break."""
+        max_daily_driving_hours = 10
+        avg_speed_in_km = 66.9
+        avg_route_length_in_km = 419.
+        avg_route_length_in_km = min(avg_route_length_in_km, max_daily_driving_hours * avg_speed_in_km)
+        max_uninterrupted_driving_time_in_hours = 4.5
+        # After max_uninterrupted_driving_time_in_hours a driver has to take a 45 min (or 0.75 hour) break
+        avg_break_time_in_hours = avg_route_length_in_km / avg_speed_in_km \
+                                  / max_uninterrupted_driving_time_in_hours * 0.75
+        # If the range is smaller than the distance covered within one interrupted driving session, extra refueling
+        # breaks have to be added. Such a break is assumed to last 15 min.
+        extra_breaks = np.ceil((max_uninterrupted_driving_time_in_hours * avg_speed_in_km / range_in_km) - 1)
+        avg_break_time_in_hours += 15 * extra_breaks
+
+        avg_loading_time_in_hours = 3
+        avg_driving_time = avg_route_length_in_km / avg_speed_in_km
+
+        shifts_per_day = 24 / (avg_driving_time + avg_break_time_in_hours + avg_loading_time_in_hours)
+        h2_distance_in_km_per_day = n_trucks * avg_route_length_in_km * shifts_per_day
+        return h2_distance_in_km_per_day
+
+    @classmethod
+    def add_h2_truck_traffic(cls, df_traffic: gpd.GeoDataFrame, n_trucks: int = 10000,
+                             data_year: int = 2018, target_year: int = 2030) -> gpd.GeoDataFrame:
+        """This method adds a column containing how many H2 trucks pass a road section per day. This is done by finding
+        what portion of the truck traffic n_trucks corresponds to and then multiplying 'truck_tmja' with that value to
+        create 'h2_truck_tmja'."""
+        if target_year < data_year:
+            raise ValueError("target_year can't be smaller than data_year.")
+        df_traffic = df_traffic.copy(deep=True)
+        # Truck traffic is predicted to grow by 1.4 percent annually: (Source: https://www.ecologie.gouv.fr/sites/
+        # default/files/Th%C3%A9ma%20-%20Projections%20de%20la%20demande%20de%20transport%20sur%20le%20long%20terme.pdf)
+        truck_traffic_growth_rate = 0.014
+        truck_traffic_multiplier = (1 + truck_traffic_growth_rate) ** (target_year - data_year)
+        # We calculate what distance the n_trucks H2 trucks are assumed to cover, then we calculate how much distance
+        # all trucks are assumed to cover in target_year. Since both distances are assumed to be from target_year, we
+        # can see what percentage the H2 trucks are making up.
+        h2_trucks_portion = (cls.calculate_h2_distance(n_trucks=n_trucks, range_in_km=400)
+                             / (df_traffic['truck_tmja']
+                                * truck_traffic_multiplier
+                                * df_traffic['longueur'] / 1000).sum())
+        # For 'h2_truck_tmja' we are simply applying the same percentage to the current traffic values. Of course it
+        # would make sense to project 'truck_tmja' as well instead of using 'truck_tmja' unchanged but hey ...
+        df_traffic['h2_truck_tmja'] = df_traffic['truck_tmja'] * h2_trucks_portion
         return df_traffic
 
     @staticmethod
@@ -364,10 +426,8 @@ class Download:
 
 class Strategies:
     @classmethod
-    def split_into_areas(cls, df_traffic: gpd.GeoDataFrame, n_areas: int, traffic_column: str = 'tmja',
-                         road_length_column: str = 'longueur',
-                         rank_column: str = 'buffer_traffic',
-                         buffer_step: Union[int, float] = 10000) -> gpd.GeoDataFrame:
+    def split_into_n_areas(cls, df_traffic: gpd.GeoDataFrame, n_areas: int, rank_column: str = 'buffer_traffic',
+                           buffer_step: Union[int, float] = 10000) -> gpd.GeoDataFrame:
         """This method creates n_areas areas that each contain at least 1 / n_areas * total distance covered by trucks
         in all of France. The output DataFrame will have n_areas new columns, each telling which records belong to
         an area. One record can belong to multiple areas.
@@ -401,15 +461,88 @@ class Strategies:
                                   buffer_step: Union[int, float] = 10000) -> tuple[Union[int, float], pd.Series]:
         """This method provides the size of the buffer that is needed around the record at index to cover
         target_distance when summing 'longueur' * 'tmja' over all road sections inside the buffer."""
+        if target_distance <= 0:
+            raise ValueError('The target_distance has to be larger than 0.')
         covered_distance = 0
         buffer = buffer_step
-        area = df_traffic.loc[index, 'geometry'].buffer(buffer)
         while covered_distance < target_distance:
+            area = df_traffic.loc[index, 'geometry'].buffer(buffer)
             mask = df_traffic.intersects(area)
             covered_distance = Data.calculate_total_distance_covered(df_traffic.loc[mask, :])
             buffer += buffer_step
-            area = df_traffic.loc[index, 'geometry'].buffer(buffer)
         return buffer - buffer_step, mask
+
+    @classmethod
+    def split_into_areas_station_based(cls, df_traffic: gpd.GeoDataFrame, station_size: Union[int, float],
+                                       n_h2_trucks: int, rank_column: str = 'buffer_traffic',
+                                       buffer_step: Union[int, float] = 10000) -> gpd.GeoDataFrame:
+        """This method creates areas based on the provided station size (in kg of H2 they can refuel) and the number of
+        H2 trucks on the road."""
+        df_traffic = df_traffic.copy(deep=True)
+        distance_to_cover = Data.calculate_h2_distance(n_trucks=n_h2_trucks)
+        total_covered_distance = 0
+        created_areas = 0
+
+        reference = df_traffic[rank_column].argmax()
+        mask = pd.Series(index=df_traffic.index)
+        mask.loc[:] = False
+        mask = mask.astype(bool)
+        areas = dict()
+        while total_covered_distance < distance_to_cover:
+            buffer_size, used_records_mask, covered_distance = \
+                cls._size_buffer_for_station(df_traffic=df_traffic, index=reference, target_h2_consumption=station_size,
+                                             buffer_step=buffer_step)
+            total_covered_distance += covered_distance
+            areas[reference] = buffer_size
+            mask += used_records_mask
+            reference = df_traffic.loc[~mask, rank_column].sort_values(ascending=False).index[0]
+            created_areas += 1
+            df_traffic.loc[used_records_mask, f'area_{created_areas}'] = True
+            df_traffic.loc[~used_records_mask, f'area_{created_areas}'] = False
+        df_traffic['no_area'] = ~mask
+        print(f'Created {created_areas + 1} areas.')
+        return df_traffic
+
+    @classmethod
+    def _size_buffer_for_station(cls, df_traffic: gpd.GeoDataFrame, index: int,
+                                 target_h2_consumption: Union[int, float],
+                                 buffer_step: Union[int, float] = 10000) -> tuple[Union[int, float],
+                                                                                  pd.Series,
+                                                                                  Union[int, float]]:
+        """This method calculates the maximum area around the record at index such that target_h2_consumption is still
+        able to cover the H2 demand.
+        target_h2_consumption is the H2 consumption in kg."""
+        if target_h2_consumption <= 0:
+            raise ValueError('The target_h2_consumption has to be larger than 0.')
+        target_distance = cls._calculate_km_from_fuel(target_h2_consumption)
+        covered_distance = 0
+        buffer = buffer_step
+        while covered_distance < target_distance:
+            area = df_traffic.loc[index, 'geometry'].buffer(buffer)
+            mask = df_traffic.intersects(area)
+            covered_distance = Data.calculate_total_distance_covered(df_traffic.loc[mask, :],
+                                                                     traffic_column='h2_truck_tmja')
+            buffer += buffer_step
+        return buffer - buffer_step, mask, covered_distance
+
+    @staticmethod
+    def _calculate_refuelings_per_day(h2_distance: Union[int, float], range_in_km: Union[int, float],
+                                      min_fuel_level: float = 0.2) -> Union[int, float]:
+        """This method calculated how many refuelings are necessary to cover h2_distance. range_in_km defines how far a
+        truck can drive on a full tank and min_fuel_level determines at what tank level a truck will be refueled."""
+        return h2_distance / ((1 - min_fuel_level) * range_in_km)
+
+    @staticmethod
+    def _calculate_fuel_need(h2_distance_in_km: Union[int, float],
+                             h2_in_kg_per_km: Union[int, float] = 0.08) -> Union[int, float]:
+        """This method calculates how many kg of H2 are needed to cover h2_distance assuming an H2 consumption per km of
+        h2_per_km."""
+        return h2_distance_in_km * h2_in_kg_per_km
+
+    @staticmethod
+    def _calculate_km_from_fuel(h2_fuel_in_kg: Union[int, float],
+                                h2_in_kg_per_km: Union[int, float] = 0.08) -> Union[int, float]:
+        return h2_fuel_in_kg / h2_in_kg_per_km
 
 
 class Plots:
