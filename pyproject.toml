@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "airliquide-sustainability-challenge"
+version = "0.1.0"
+description = ""
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+packages = [{include = "airliquide_sustainability_challenge"}]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+selenium = "^4.8.2"
+pandas = "^1.5.3"
+matplotlib = "^3.7.1"
+geopandas = "^0.12.2"
+pyyaml = "^6.0"
+folium = "^0.14.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

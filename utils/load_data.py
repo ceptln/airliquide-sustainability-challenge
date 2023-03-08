@@ -59,7 +59,8 @@ class Data:
         """This method can be used to add the region data to e.g. the traffic DataFrame. The matching is done based on
         the department number."""
         df = df.copy(deep=True)
-        df = df.merge(df_depreg, how='inner', left_on=df_department_col, right_on='num_dep')
+        df = df.merge(df_depreg, how='inner',
+                      left_on=df_department_col, right_on='num_dep')
         useless_columns = ['num_dep', 'dep_name']
         for column in useless_columns:
             try:
@@ -82,7 +83,8 @@ class Data:
         df = df.merge(df_regions.rename(columns={'geometry': 'region_geometry'}).set_geometry('region_geometry'),
                       left_on=df_region_col, right_on='nomnewregi', how='inner')
         if df_type == pd.DataFrame:
-            df = gpd.GeoDataFrame(df, geometry='region_geometry', crs=df_regions.crs)
+            df = gpd.GeoDataFrame(
+                df, geometry='region_geometry', crs=df_regions.crs)
 
         # Since we are only interested in the shapes from the regions DataFrame we can get rid of the other column that
         # came with the regions DataFrame during the merge
@@ -111,62 +113,69 @@ class Data:
             df[index + '_geometry'] = value
             df = df.set_geometry(col=index + '_geometry')
             df[index + '_geometry'].crs = df['geometry'].crs
-            df[index + '_intersection'] = df['geometry'].intersection(df[index + '_geometry'])
+            df[index +
+                '_intersection'] = df['geometry'].intersection(df[index + '_geometry'])
             df[index + '_length'] = df[index + '_intersection'].length
-            df = df.drop(columns=[index + '_geometry', index + '_intersection'])
+            df = df.drop(columns=[index + '_geometry',
+                         index + '_intersection'])
             df['total_length'] += df[index + '_length']
 
         for index, value in r_with_shapes.items():
-            df[index + '_length'] = df[index + '_length'] / df['total_length'] * df['longueur']
+            df[index + '_length'] = df[index + '_length'] / \
+                df['total_length'] * df['longueur']
         return df.drop(columns=['total_length'])
 
     @staticmethod
     def translate_regions_regions_to_official_names(df_regions: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         """This method translates the region names from the regions DataFrame to names as they are found online and in
         the depreg DataFrame."""
-        name_mapping = dict()
-        name_mapping['Alsace, Champagne-Ardenne et Lorraine'] = 'Grand Est'
-        name_mapping['Aquitaine, Limousin et Poitou-Charentes'] = 'Nouvelle-Aquitaine'
-        name_mapping['Auvergne et RhÃ´ne-Alpes'] = 'Auvergne-Rhône-Alpes'
-        name_mapping['Basse-Normandie et Haute-Normandie'] = 'Normandie'
-        name_mapping['Bourgogne et Franche-ComtÃ©'] = 'Bourgogne-Franche-Comté'
-        name_mapping['Bretagne'] = 'Bretagne'
-        name_mapping['Centre'] = 'Centre-Val de Loire'
-        name_mapping['Corse'] = 'Corse'
-        name_mapping['Ile-de-France'] = 'Île-de-France'
-        name_mapping['Languedoc-Roussillon et Midi-PyrÃ©nÃ©es'] = 'Occitanie'
-        name_mapping['Nord-Pas-de-Calais et Picardie'] = 'Hauts-de-France'
-        name_mapping['Pays de la Loire'] = 'Pays de la Loire'
-        name_mapping["Provence-Alpes-CÃ´te d'Azur"] = "Provence-Alpes-Côte d'Azur"
+        name_mapping = {
+            'Alsace, Champagne-Ardenne et Lorraine': 'Grand Est',
+            'Aquitaine, Limousin et Poitou-Charentes': 'Nouvelle-Aquitaine',
+            'Auvergne et RhÃ´ne-Alpes': 'Auvergne-Rhône-Alpes',
+            'Basse-Normandie et Haute-Normandie': 'Normandie',
+            'Bourgogne et Franche-ComtÃ©': 'Bourgogne-Franche-Comté',
+            'Bretagne': 'Bretagne',
+            'Centre': 'Centre-Val de Loire',
+            'Corse': 'Corse',
+            'Ile-de-France': 'Île-de-France',
+            'Languedoc-Roussillon et Midi-PyrÃ©nÃ©es': 'Occitanie',
+            'Nord-Pas-de-Calais et Picardie': 'Hauts-de-France',
+            'Pays de la Loire': 'Pays de la Loire',
+            "Provence-Alpes-CÃ´te d'Azur": "Provence-Alpes-Côte d'Azur",
+        }
         df = df_regions.copy(deep=True)
-        df.loc[:, 'nomnewregi'] = df.loc[:, 'nomnewregi'].apply(lambda x: name_mapping[x])
+        df.loc[:, 'nomnewregi'] = df.loc[:, 'nomnewregi'].apply(
+            lambda x: name_mapping[x])
         return df
 
     @staticmethod
     def translate_depreg_regions_to_regions_regions(df_depreg: pd.DataFrame) -> pd.DataFrame:
         """This method maps the region names as they are found in the depreg DataFrame to the names as they are found in
         the regions DataFrame."""
-        name_mapping = dict()
-        name_mapping['Auvergne-Rhône-Alpes'] = 'Auvergne et RhÃ´ne-Alpes'
-        name_mapping['Bourgogne-Franche-Comté'] = 'Bourgogne et Franche-ComtÃ©'
-        name_mapping['Bretagne'] = 'Bretagne'
-        name_mapping['Centre-Val de Loire'] = 'Centre'
-        name_mapping['Corse'] = 'Corse'
-        name_mapping['Grand Est'] = 'Alsace, Champagne-Ardenne et Lorraine'
-        name_mapping['Guadeloupe'] = np.nan
-        name_mapping['Guyane'] = np.nan
-        name_mapping['Hauts-de-France'] = 'Nord-Pas-de-Calais et Picardie'
-        name_mapping['La Réunion'] = np.nan
-        name_mapping['Martinique'] = np.nan
-        name_mapping['Mayotte'] = np.nan
-        name_mapping['Normandie'] = 'Basse-Normandie et Haute-Normandie'
-        name_mapping['Nouvelle-Aquitaine'] = 'Aquitaine, Limousin et Poitou-Charentes'
-        name_mapping['Occitanie'] = 'Languedoc-Roussillon et Midi-PyrÃ©nÃ©es'
-        name_mapping['Pays de la Loire'] = 'Pays de la Loire'
-        name_mapping["Provence-Alpes-Côte d'Azur"] = "Provence-Alpes-CÃ´te d'Azur"
-        name_mapping['Île-de-France'] = 'Ile-de-France'
+        name_mapping = {
+            'Auvergne-Rhône-Alpes': 'Auvergne et RhÃ´ne-Alpes',
+            'Bourgogne-Franche-Comté': 'Bourgogne et Franche-ComtÃ©',
+            'Bretagne': 'Bretagne',
+            'Centre-Val de Loire': 'Centre',
+            'Corse': 'Corse',
+            'Grand Est': 'Alsace, Champagne-Ardenne et Lorraine',
+            'Guadeloupe': np.nan,
+            'Guyane': np.nan,
+            'Hauts-de-France': 'Nord-Pas-de-Calais et Picardie',
+            'La Réunion': np.nan,
+            'Martinique': np.nan,
+            'Mayotte': np.nan,
+            'Normandie': 'Basse-Normandie et Haute-Normandie',
+            'Nouvelle-Aquitaine': 'Aquitaine, Limousin et Poitou-Charentes',
+            'Occitanie': 'Languedoc-Roussillon et Midi-PyrÃ©nÃ©es',
+            'Pays de la Loire': 'Pays de la Loire',
+            "Provence-Alpes-Côte d'Azur": "Provence-Alpes-CÃ´te d'Azur",
+            'Île-de-France': 'Ile-de-France',
+        }
         df = df_depreg.copy(deep=True)
-        df.loc[:, 'region_name'] = df.loc[:, 'region_name'].apply(lambda x: name_mapping[x])
+        df.loc[:, 'region_name'] = df.loc[:, 'region_name'].apply(
+            lambda x: name_mapping[x])
         return df
 
 
@@ -216,7 +225,8 @@ class Download:
         # The files are downloaded with an é in the name, but the original files are with an e -> we change the names
         regions_folder = Data.find_folder('regions')
         for file in os.listdir(regions_folder):
-            os.rename(f'{regions_folder}/{file}', f'{regions_folder}/{file.replace("é", "e")}')
+            os.rename(f'{regions_folder}/{file}',
+                      f'{regions_folder}/{file.replace("é", "e")}')
 
     @classmethod
     def download_aires_pl(cls) -> None:
@@ -237,7 +247,8 @@ class Download:
         options.set_preference('browser.download.dir', data_folder_path)
         options.set_preference('browser.download.folderList', 2)
         executable_path = Data.find_file('geckodriver')
-        driver = webdriver.Firefox(service=Service(executable_path=executable_path), options=options)
+        driver = webdriver.Firefox(service=Service(
+            executable_path=executable_path), options=options)
         # Loading the Google spreadsheet page
         google_doc_url = 'https://docs.google.com/spreadsheets/d/1TYjPlSC0M2VTDPkQHqLrshnkItETbSwl/edit#gid=855090481'
         driver.get(google_doc_url)
@@ -266,7 +277,8 @@ class Download:
         # Renaming the downloaded file to stations.csv
         downloaded_name = 'Données de stations TE_DV.xlsx - export_data_te.csv'
         if downloaded_name in os.listdir(data_folder_path):
-            os.rename(f'{data_folder_path}/{downloaded_name}', f'{data_folder_path}/stations.csv')
+            os.rename(f'{data_folder_path}/{downloaded_name}',
+                      f'{data_folder_path}/stations.csv')
         else:
             raise ValueError('The stations.csv file could not be downloaded')
 
@@ -292,7 +304,8 @@ def load_stations(path: str = None) -> pd.DataFrame:
         stations = pd.read_csv('../' + path)
     except FileNotFoundError:
         stations = pd.read_csv(config['stations_file'])
-    stations[['lat', 'lon', '1']] = stations.Coordinates.str.split(",", expand=True)
+    stations[['lat', 'lon', '1']] = stations.Coordinates.str.split(
+        ",", expand=True)
     stations = stations.drop(columns=['1'])
     stations = stations.drop('H2 Conversion', axis=1)
     return stations
@@ -305,7 +318,8 @@ def load_rrn_vsmap(path: str = None) -> pd.DataFrame:
         rrn_vsmap = gpd.read_file('../' + path)
     except FileNotFoundError:
         rrn_vsmap = gpd.read_file(path)
-    rrn_vsmap[['dep', 'route', '1', '2', '3', '4']] = rrn_vsmap.route.str.split(" ", expand=True)
+    rrn_vsmap[['dep', 'route', '1', '2', '3', '4']
+              ] = rrn_vsmap.route.str.split(" ", expand=True)
     rrn_vsmap = rrn_vsmap.drop(columns=['1', '2', '3', '4'])
     return rrn_vsmap
 
@@ -360,3 +374,13 @@ def load_airesPL(path: str = None) -> pd.DataFrame:
     except FileNotFoundError:
         airesPL = gpd.read_file(path)
     return airesPL
+
+
+def load_tmja19(path: str = None) -> pd.DataFrame:
+    if path is None:
+        path = config['tmja']
+    try:
+        traffic = gpd.read_file('../' + path)
+    except FileNotFoundError:
+        traffic = gpd.read_file(path)
+    return traffic
