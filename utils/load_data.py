@@ -542,7 +542,52 @@ class Strategies:
     @staticmethod
     def _calculate_km_from_fuel(h2_fuel_in_kg: Union[int, float],
                                 h2_in_kg_per_km: Union[int, float] = 0.08) -> Union[int, float]:
+        """This method calculates how many km can be driven with h2_fuel_in_kg kilos of H2."""
         return h2_fuel_in_kg / h2_in_kg_per_km
+
+    @staticmethod
+    def _calculate_initial_cost(stations: dict[str, int]) -> int:
+        """This method calculates the cost of the initial investment of the configuration provided in stations.
+        stations is assumed to have 'small', 'medium' and/or 'large' as key(s) and the number of stations of each type
+        as value(s). E.g.:
+        {'small': 10, 'medium': 15, 'large': 3}"""
+        cost_per_station = {'small': 3 * 10 ** 6, 'medium': 5 * 10 ** 6, 'large': 8 * 10 ** 6}
+        if len([station for station in stations if station in cost_per_station]) != len(stations):
+            raise ValueError("Only 'small', 'medium' and 'large' are allowed as keys to the stations dictionary.")
+        return int(sum([cost_per_station[key] * stations[key] for key in stations]))
+
+    @staticmethod
+    def _calculate_variable_cost(stations: dict[str, dict[str, int]]):
+        """This method calculates the ongoing cost of the stations. stations is assumed to have
+        'small', 'medium' and/or 'large' as first key and as value a dictionary with 'n_stations' and 'duration' as key
+        and the number of stations and the years of operation as values respectively. E.g.:
+        {'small': {'n_stations': 2, 'duration': 10},
+        'medium': {'n_stations': 5, 'duration': 10}}"""
+        cost_per_year_per_station = {'small': 3 * 10 ** 5,
+                                     'medium': 8 / 100 * 5 * 10 ** 6,
+                                     'large': 7 / 100 * 8 * 10 ** 6}
+        if len([station for station in stations if station in cost_per_year_per_station]) != len(stations):
+            raise ValueError("Only 'small', 'medium' and 'large' are allowed as keys to the stations dictionary.")
+        total_cost = 0
+        for type_key in stations:
+            var_cost = cost_per_year_per_station[type_key]
+            for key in stations[type_key]:
+                var_cost *= stations[type_key][key]
+            total_cost += var_cost
+        return int(total_cost)
+
+    @classmethod
+    def calculate_cost(cls, stations: dict[str, dict[str, int]]) -> int:
+        """This method calculates the total cost of the stations. stations is assumed to have 'small', 'medium' and/or
+        'large' as first key and as value a dictionary with 'n_stations' and 'duration' as key and the number of
+        stations and the years of operation as values respectively. E.g.:
+        {'small': {'n_stations': 2, 'duration': 10},
+        'medium': {'n_stations': 5, 'duration': 10}}
+        The output will be in euros."""
+        dict_for_inital_cost = {station_type: stations[station_type]['n_stations'] for station_type in stations}
+        initial_cost = cls._calculate_initial_cost(stations=dict_for_inital_cost)
+        ongoing_cost = cls._calculate_variable_cost(stations=stations)
+        return initial_cost + ongoing_cost
 
 
 class Plots:
