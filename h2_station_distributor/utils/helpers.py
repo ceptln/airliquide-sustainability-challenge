@@ -108,45 +108,6 @@ class Data:
         return df_traffic
 
     @staticmethod
-    def convert_pd_stations_to_gpd(df_stations: pd.DataFrame, target_crs: str = 'EPSG:2154') -> gpd.GeoDataFrame:
-        """This method creates a GeoDataFrame from the stations DataFrame."""
-        df_stations = df_stations.copy(deep=True)
-        # Cleaning the coordinates column
-        df_stations['Coordinates'] = df_stations['Coordinates'].str.replace(',,', ',')
-        # Creating the column with shapely Points
-        df_stations[['y', 'x']] = df_stations['Coordinates'].str.split(',', n=1, expand=True)
-        df_stations['geometry'] = gpd.points_from_xy(x=df_stations['x'], y=df_stations['y'])
-        # Converting the DataFrame into a GeoDataFrame
-        gdf_stations = gpd.GeoDataFrame(df_stations, geometry='geometry', crs='EPSG:4326')
-        # Converting the crs to the target_crs
-        gdf_stations = gdf_stations.to_crs(crs=target_crs)
-        # Remove the columns we just created
-        gdf_stations = gdf_stations.drop(columns=['y', 'x'])
-        return gdf_stations
-
-    @staticmethod
-    def _check_exclusivity_of_road_sections(df_traffic: gpd.GeoDataFrame, threshold: Union[int, float] = 1,
-                                            geometry_column: str = 'geometry') -> bool:
-        """This method checks if all the records in df_traffic have mutually exclusive road sections. threshold defines
-        beyond how many meters of overlap a road section is not considered as mutually exclusive."""
-        for index, value in df_traffic[geometry_column]:
-            intersection = df_traffic[geometry_column].intersection(value).length.sum()
-            if (intersection - value.length) > threshold:
-                print(f'{index} has more than {threshold} meter(s) of overlap with other road sections.')
-                return False
-        return True
-
-    @staticmethod
-    def limit_gdfs_to_main_land_france(df: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-        """This method filters out records from df that contain geometry that is not inside main land France."""
-        df = df.copy(deep=True)
-        df_regions = df_regions.copy(deep=True)
-
-        main_land = df_regions[df_regions['nomnewregi'] != 'Corse']
-        mask = df.loc[:, 'geometry'].apply(lambda x: any(main_land.contains(x)))
-        return df[mask]
-
-    @staticmethod
     def add_regions_to_departments(df: Union[gpd.GeoDataFrame, pd.DataFrame], df_depreg: pd.DataFrame,
                                    df_department_col: str = 'depPrD') -> Union[gpd.GeoDataFrame, pd.DataFrame]:
         """This method can be used to add the region data to e.g. the traffic DataFrame. The matching is done based on
@@ -231,6 +192,32 @@ class Data:
                                                         * df_traffic['tmja']).sum()
         return df_traffic
 
+    @classmethod
+    def add_h2_truck_traffic(cls, df_traffic: gpd.GeoDataFrame, n_trucks: int = 10000,
+                             data_year: int = 2018, target_year: int = 2030) -> gpd.GeoDataFrame:
+        """This method adds a column containing how many H2 trucks pass a road section per day. This is done by finding
+        what portion of the truck traffic n_trucks corresponds to and then multiplying 'tmja' * 'pctPL' with that value
+        to create 'h2_truck_tmja'."""
+        if target_year < data_year:
+            raise ValueError("target_year can't be smaller than data_year.")
+        df_traffic = df_traffic.copy(deep=True)
+        # Truck traffic is predicted to grow by 1.4 percent annually: (Source: https://www.ecologie.gouv.fr/sites/
+        # default/files/Th%C3%A9ma%20-%20Projections%20de%20la%20demande%20de%20transport%20sur%20le%20long%20terme.pdf)
+        truck_traffic_growth_rate = 0.014
+        truck_traffic_multiplier = (1 + truck_traffic_growth_rate) ** (target_year - data_year)
+        # We calculate what distance the n_trucks H2 trucks are assumed to cover, then we calculate how much distance
+        # all trucks are assumed to cover in target_year. Since both distances are assumed to be from target_year, we
+        # can see what percentage the H2 trucks are making up.
+        h2_trucks_portion = (cls.calculate_h2_distance(n_trucks=n_trucks, range_in_km=400)
+                             / (df_traffic['tmja']
+                                * df_traffic['pctPL']
+                                * truck_traffic_multiplier
+                                * df_traffic['geometry'].length / 1000).sum())
+        # For 'h2_truck_tmja' we are simply applying the same percentage to the current traffic values. Of course it
+        # would make sense to project 'truck_tmja' as well instead of using 'truck_tmja' unchanged but hey ...
+        df_traffic['h2_truck_tmja'] = df_traffic['tmja'] * df_traffic['pctPL'] * h2_trucks_portion
+        return df_traffic
+
     @staticmethod
     def calculate_h2_distance(n_trucks: int, range_in_km: Union[int, float] = 400) -> Union[int, float]:
         """This method calculates how much distance n_trucks are assumed to cover in a day. range_in_km determines how
@@ -267,32 +254,6 @@ class Data:
         shifts_per_day = 24 / (avg_driving_time + avg_break_time_in_hours + avg_loading_time_in_hours)
         h2_distance_in_km_per_day = n_trucks * avg_route_length_in_km * shifts_per_day
         return h2_distance_in_km_per_day
-
-    @classmethod
-    def add_h2_truck_traffic(cls, df_traffic: gpd.GeoDataFrame, n_trucks: int = 10000,
-                             data_year: int = 2018, target_year: int = 2030) -> gpd.GeoDataFrame:
-        """This method adds a column containing how many H2 trucks pass a road section per day. This is done by finding
-        what portion of the truck traffic n_trucks corresponds to and then multiplying 'tmja' * 'pctPL' with that value
-        to create 'h2_truck_tmja'."""
-        if target_year < data_year:
-            raise ValueError("target_year can't be smaller than data_year.")
-        df_traffic = df_traffic.copy(deep=True)
-        # Truck traffic is predicted to grow by 1.4 percent annually: (Source: https://www.ecologie.gouv.fr/sites/
-        # default/files/Th%C3%A9ma%20-%20Projections%20de%20la%20demande%20de%20transport%20sur%20le%20long%20terme.pdf)
-        truck_traffic_growth_rate = 0.014
-        truck_traffic_multiplier = (1 + truck_traffic_growth_rate) ** (target_year - data_year)
-        # We calculate what distance the n_trucks H2 trucks are assumed to cover, then we calculate how much distance
-        # all trucks are assumed to cover in target_year. Since both distances are assumed to be from target_year, we
-        # can see what percentage the H2 trucks are making up.
-        h2_trucks_portion = (cls.calculate_h2_distance(n_trucks=n_trucks, range_in_km=400)
-                             / (df_traffic['tmja']
-                                * df_traffic['pctPL']
-                                * truck_traffic_multiplier
-                                * df_traffic['geometry'].length / 1000).sum())
-        # For 'h2_truck_tmja' we are simply applying the same percentage to the current traffic values. Of course it
-        # would make sense to project 'truck_tmja' as well instead of using 'truck_tmja' unchanged but hey ...
-        df_traffic['h2_truck_tmja'] = df_traffic['tmja'] * df_traffic['pctPL'] * h2_trucks_portion
-        return df_traffic
 
     @staticmethod
     def calculate_total_distance_covered(df_traffic: gpd.GeoDataFrame,
@@ -357,6 +318,45 @@ class Data:
         df = df_depreg.copy(deep=True)
         df.loc[:, 'region_name'] = df.loc[:, 'region_name'].apply(lambda x: name_mapping[x])
         return df
+
+    @staticmethod
+    def convert_pd_stations_to_gpd(df_stations: pd.DataFrame, target_crs: str = 'EPSG:2154') -> gpd.GeoDataFrame:
+        """This method creates a GeoDataFrame from the stations DataFrame."""
+        df_stations = df_stations.copy(deep=True)
+        # Cleaning the coordinates column
+        df_stations['Coordinates'] = df_stations['Coordinates'].str.replace(',,', ',')
+        # Creating the column with shapely Points
+        df_stations[['y', 'x']] = df_stations['Coordinates'].str.split(',', n=1, expand=True)
+        df_stations['geometry'] = gpd.points_from_xy(x=df_stations['x'], y=df_stations['y'])
+        # Converting the DataFrame into a GeoDataFrame
+        gdf_stations = gpd.GeoDataFrame(df_stations, geometry='geometry', crs='EPSG:4326')
+        # Converting the crs to the target_crs
+        gdf_stations = gdf_stations.to_crs(crs=target_crs)
+        # Remove the columns we just created
+        gdf_stations = gdf_stations.drop(columns=['y', 'x'])
+        return gdf_stations
+
+    @staticmethod
+    def limit_gdfs_to_main_land_france(df: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        """This method filters out records from df that contain geometry that is not inside main land France."""
+        df = df.copy(deep=True)
+        df_regions = df_regions.copy(deep=True)
+
+        main_land = df_regions[df_regions['nomnewregi'] != 'Corse']
+        mask = df.loc[:, 'geometry'].apply(lambda x: any(main_land.contains(x)))
+        return df[mask]
+
+    @staticmethod
+    def _check_exclusivity_of_road_sections(df_traffic: gpd.GeoDataFrame, threshold: Union[int, float] = 1,
+                                            geometry_column: str = 'geometry') -> bool:
+        """This method checks if all the records in df_traffic have mutually exclusive road sections. threshold defines
+        beyond how many meters of overlap a road section is not considered as mutually exclusive."""
+        for index, value in df_traffic[geometry_column]:
+            intersection = df_traffic[geometry_column].intersection(value).length.sum()
+            if (intersection - value.length) > threshold:
+                print(f'{index} has more than {threshold} meter(s) of overlap with other road sections.')
+                return False
+        return True
 
 
 class Download:
@@ -501,59 +501,6 @@ class Strategies:
         df_traffic['no_area'] = ~mask
         return df_traffic, areas
 
-    @staticmethod
-    def _size_buffer_for_distance(df_traffic: gpd.GeoDataFrame,
-                                  index: int,
-                                  target_distance: Union[int, float],
-                                  initial_buffer: Union[int, float] = 10000,
-                                  buffer_step: Union[int, float] = 10000,
-                                  step_direction: str = 'up') -> tuple[Union[int, float],
-                                                                       pd.Series,
-                                                                       Union[int, float],
-                                                                       shapely.Polygon]:
-        """This method provides the size of the buffer that is needed around the record at index to cover
-        target_distance when summing the traffic * road over all road sections inside the buffer.
-        target_distance is what that sum is supposed to be
-        initial_buffer is the buffer from which we start our calculation
-        buffer_step is the step size by which we want to increase/decrease the buffer
-        step_direction defines whether we want to increase the buffer from initial_buffer or decrease it"""
-        if target_distance <= 0:
-            raise ValueError('The target_distance has to be larger than 0.')
-        if initial_buffer < 0:
-            raise ValueError('The initial_buffer cannot be smaller than 0.')
-        if buffer_step <= 0:
-            raise ValueError('The buffer_step has to be larger than 0.')
-        if step_direction not in ['down', 'up']:
-            raise ValueError("The step direction can only be up or down.")
-        if step_direction == 'up':
-            comparison_operator = '<'
-        else:
-            comparison_operator = '>'
-
-        buffer = initial_buffer
-        area = df_traffic.loc[index, 'geometry'].centroid.buffer(buffer)
-        mask = df_traffic.intersects(area)
-        # covered_distance = Data.calculate_total_distance_covered(df_traffic.loc[mask, :],
-        #                                                          traffic_column='h2_truck_tmja')
-        covered_distance = Data.calculate_distance_covered_by_area(df_traffic.loc[mask, :],
-                                                                   area=area,
-                                                                   traffic_column='h2_truck_tmja')
-        while eval(f'{covered_distance}{comparison_operator}{target_distance}'):
-            # If else conditions are faster than eval
-            if step_direction == 'up':
-                buffer += buffer_step
-            else:
-                buffer -= buffer_step
-            area = df_traffic.loc[index, 'geometry'].centroid.buffer(buffer)
-            mask = df_traffic.intersects(area)
-            # covered_distance = Data.calculate_total_distance_covered(df_traffic.loc[mask, :],
-            #                                                          traffic_column='h2_truck_tmja')
-            covered_distance = Data.calculate_distance_covered_by_area(df_traffic.loc[mask, :],
-                                                                       area=area,
-                                                                       traffic_column='h2_truck_tmja')
-
-        return buffer, mask, covered_distance, area
-
     @classmethod
     def split_into_areas_station_based(cls, df_traffic: gpd.GeoDataFrame, station_size: Union[int, float],
                                        n_h2_trucks: int, rank_column: str = 'buffer_distance',
@@ -613,6 +560,72 @@ class Strategies:
             df.loc[index, ['station', 'geometry']] = cls.find_closest_station_in_area(area, df_stations)
         return df
 
+    @classmethod
+    def calculate_cost(cls, stations: dict[str, dict[str, int]]) -> int:
+        """This method calculates the total cost of the stations. stations is assumed to have 'small', 'medium' and/or
+        'large' as first key and as value a dictionary with 'n_stations' and 'duration' as key and the number of
+        stations and the years of operation as values respectively. E.g.:
+        {'small': {'n_stations': 2, 'duration': 10},
+        'medium': {'n_stations': 5, 'duration': 10}}
+        The output will be in euros."""
+        dict_for_inital_cost = {station_type: stations[station_type]['n_stations'] for station_type in stations}
+        initial_cost = cls._calculate_initial_cost(stations=dict_for_inital_cost)
+        ongoing_cost = cls._calculate_variable_cost(stations=stations)
+        return initial_cost + ongoing_cost
+
+    @staticmethod
+    def _size_buffer_for_distance(df_traffic: gpd.GeoDataFrame,
+                                  index: int,
+                                  target_distance: Union[int, float],
+                                  initial_buffer: Union[int, float] = 10000,
+                                  buffer_step: Union[int, float] = 10000,
+                                  step_direction: str = 'up') -> tuple[Union[int, float],
+                                                                       pd.Series,
+                                                                       Union[int, float],
+                                                                       shapely.Polygon]:
+        """This method provides the size of the buffer that is needed around the record at index to cover
+        target_distance when summing the traffic * road over all road sections inside the buffer.
+        target_distance is what that sum is supposed to be
+        initial_buffer is the buffer from which we start our calculation
+        buffer_step is the step size by which we want to increase/decrease the buffer
+        step_direction defines whether we want to increase the buffer from initial_buffer or decrease it"""
+        if target_distance <= 0:
+            raise ValueError('The target_distance has to be larger than 0.')
+        if initial_buffer < 0:
+            raise ValueError('The initial_buffer cannot be smaller than 0.')
+        if buffer_step <= 0:
+            raise ValueError('The buffer_step has to be larger than 0.')
+        if step_direction not in ['down', 'up']:
+            raise ValueError("The step direction can only be up or down.")
+        if step_direction == 'up':
+            comparison_operator = '<'
+        else:
+            comparison_operator = '>'
+
+        buffer = initial_buffer
+        area = df_traffic.loc[index, 'geometry'].centroid.buffer(buffer)
+        mask = df_traffic.intersects(area)
+        # covered_distance = Data.calculate_total_distance_covered(df_traffic.loc[mask, :],
+        #                                                          traffic_column='h2_truck_tmja')
+        covered_distance = Data.calculate_distance_covered_by_area(df_traffic.loc[mask, :],
+                                                                   area=area,
+                                                                   traffic_column='h2_truck_tmja')
+        while eval(f'{covered_distance}{comparison_operator}{target_distance}'):
+            # If else conditions are faster than eval
+            if step_direction == 'up':
+                buffer += buffer_step
+            else:
+                buffer -= buffer_step
+            area = df_traffic.loc[index, 'geometry'].centroid.buffer(buffer)
+            mask = df_traffic.intersects(area)
+            # covered_distance = Data.calculate_total_distance_covered(df_traffic.loc[mask, :],
+            #                                                          traffic_column='h2_truck_tmja')
+            covered_distance = Data.calculate_distance_covered_by_area(df_traffic.loc[mask, :],
+                                                                       area=area,
+                                                                       traffic_column='h2_truck_tmja')
+
+        return buffer, mask, covered_distance, area
+
     @staticmethod
     def _calculate_refuelings_per_day(h2_distance: Union[int, float], range_in_km: Union[int, float],
                                       min_fuel_level: float = 0.2) -> Union[int, float]:
@@ -663,19 +676,6 @@ class Strategies:
                 var_cost *= stations[type_key][key]
             total_cost += var_cost
         return int(total_cost)
-
-    @classmethod
-    def calculate_cost(cls, stations: dict[str, dict[str, int]]) -> int:
-        """This method calculates the total cost of the stations. stations is assumed to have 'small', 'medium' and/or
-        'large' as first key and as value a dictionary with 'n_stations' and 'duration' as key and the number of
-        stations and the years of operation as values respectively. E.g.:
-        {'small': {'n_stations': 2, 'duration': 10},
-        'medium': {'n_stations': 5, 'duration': 10}}
-        The output will be in euros."""
-        dict_for_inital_cost = {station_type: stations[station_type]['n_stations'] for station_type in stations}
-        initial_cost = cls._calculate_initial_cost(stations=dict_for_inital_cost)
-        ongoing_cost = cls._calculate_variable_cost(stations=stations)
-        return initial_cost + ongoing_cost
 
 
 class Plots:
