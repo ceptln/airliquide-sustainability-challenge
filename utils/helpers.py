@@ -63,7 +63,7 @@ class Data:
     def find_file(file_name: str) -> str:
         """This method searches for file_name and returns the full path to it."""
         current_working_directory = os.getcwd()
-        for root, folders, files in os.walk('.'):
+        for root, folders, files in os.walk('..'):
             if file_name in files:
                 return f'{current_working_directory}{root.lstrip(".")}/{file_name}'
 
@@ -71,7 +71,7 @@ class Data:
     def find_folder(folder_name: str) -> str:
         """This method searches for folder_name and returns the full path to it."""
         current_working_directory = os.getcwd()
-        for root, folders, files in os.walk('.'):
+        for root, folders, files in os.walk('..'):
             if folder_name in folders:
                 return f'{current_working_directory}{root.lstrip(".")}/{folder_name}'
 
@@ -425,7 +425,7 @@ class Download:
         options.add_argument('--headless')
         options.set_preference('browser.download.dir', data_folder_path)
         options.set_preference('browser.download.folderList', 2)
-        executable_path = Data.find_file('geckodriver')
+        executable_path = Data.find_file('../geckodriver')
         driver = webdriver.Firefox(service=Service(executable_path=executable_path), options=options)
         # Loading the Google spreadsheet page
         google_doc_url = 'https://docs.google.com/spreadsheets/d/1TYjPlSC0M2VTDPkQHqLrshnkItETbSwl/edit#gid=855090481'
