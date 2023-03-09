@@ -23,7 +23,6 @@ import zipfile
 
 warnings.simplefilter('ignore', FutureWarning)
 
-
 with open("../config.yaml") as f:
     config = yaml.safe_load(f)
 
@@ -262,8 +261,8 @@ class Data:
         avg_route_length_in_km = min(avg_route_length_in_km, max_daily_driving_hours * avg_speed_in_km)
         max_uninterrupted_driving_time_in_hours = 4.5
         # After max_uninterrupted_driving_time_in_hours a driver has to take a 45 min (or 0.75 hour) break
-        avg_break_time_in_hours = avg_route_length_in_km / avg_speed_in_km \
-                                  / max_uninterrupted_driving_time_in_hours * 0.75
+        avg_break_time_in_hours = (avg_route_length_in_km / avg_speed_in_km
+                                   / max_uninterrupted_driving_time_in_hours * 0.75)
         # If the range is smaller than the distance covered within one interrupted driving session, extra refueling
         # breaks have to be added. Such a break is assumed to last 15 min.
         extra_breaks = np.ceil((max_uninterrupted_driving_time_in_hours * avg_speed_in_km / range_in_km) - 1)
