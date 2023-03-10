@@ -1,22 +1,23 @@
 import geopandas as gpd
 import sys
 import yaml
-
-sys.path.insert(1, "../")
-from utils.load_data import *
+import pandas as pd
+import numpy as np
 import math
-
-with open("../config.yaml") as f:
-    config = yaml.safe_load(f)
 import scipy
+from utils.helpers import Data
+
+
+# with open(Data.find_file("config.yaml")) as f:
+#     config = yaml.safe_load(f)
 
 
 class Stations:
     def __init__(self):
         self.df = None
         self.points = None
-        self.shapefile = gpd.read_file("../" + config["tmja"])
-        self.dfad = gpd.read_file("../" + config["airesPL"])
+        self.shapefile = gpd.read_file(Data.find_file("TMJA2019.shp"))
+        self.dfad = gpd.read_file(Data.find_file("Aires_logistiques_denses.shp"))
 
     def preprocess(self):
         df = self.shapefile
@@ -213,15 +214,15 @@ class Stations:
         best[2]["profitable"] = best[2]["profitability"].apply(lambda x: int(x > 0))
         return best
 
-    def solution(self, department, nums):
+    def solution(self, department, nums_big, nums_medium, nums_small):
         big = self.get_best_locations(
-            self.prepare_and_fitness_big(department), nums, "big"
+            self.prepare_and_fitness_big(department), nums_big, "big"
         )
         medium = self.get_best_locations(
-            self.prepare_and_fitness_medium(department, big[2]), nums, "medium"
+            self.prepare_and_fitness_medium(department, big[2]), nums_medium, "medium"
         )
         temp = pd.concat([big[2], medium[2]]).reset_index().iloc[:, 1:]
         small = self.get_best_locations(
-            self.prepare_and_fitness_small(department, temp), nums, "small"
+            self.prepare_and_fitness_small(department, temp), nums_small, "small"
         )
         return pd.concat([big[2], medium[2], small[2]])

@@ -9,3 +9,5 @@ shapely
 streamlit
 PyYAML
 plotly
+pyproj
+streamlit-folium
