@@ -1,7 +1,10 @@
 geopandas
 matplotlib<3.7
 pandas
+notebook
 numpy
 requests
 selenium
+shapely
+streamlit
 PyYAML

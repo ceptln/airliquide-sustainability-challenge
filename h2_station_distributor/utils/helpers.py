@@ -1,4 +1,10 @@
 from __future__ import annotations
+import io
+import os
+import requests
+import time
+from typing import Union
+import zipfile
 
 import geopandas as gpd
 import shapely
@@ -11,21 +17,6 @@ from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.firefox.service import Service
-
-import io
-import os
-import requests
-import time
-from typing import Union
-import warnings
-import yaml
-import zipfile
-
-warnings.simplefilter('ignore', FutureWarning)
-
-
-with open("../config.yaml") as f:
-    config = yaml.safe_load(f)
 
 
 class LoadData:
@@ -42,12 +33,16 @@ class LoadData:
         return df
 
     @staticmethod
-    def load_regions(file_path: str = None, translate_regions_to_official_names: bool = True) -> gpd.GeoDataFrame:
+    def load_regions(file_path: str = None, translate_regions_to_official_names: bool = True,
+                     exclude_corsica: bool = True) -> gpd.GeoDataFrame:
         if file_path is None:
             file_path = Data.find_file('regions_2016.shp')
         df = gpd.read_file(file_path)
         if translate_regions_to_official_names:
             df = Data.translate_regions_regions_to_official_names(df_regions=df)
+        if exclude_corsica:
+            df = df.loc[df['nomnewregi'] != 'Corse', :]
+            df = df.reset_index(drop=True)
         return df
 
     @staticmethod
@@ -60,28 +55,29 @@ class LoadData:
         return df
 
     @staticmethod
-    def load_depreg(file_path: str = None) -> pd.DataFrame:
+    def load_depreg(file_path: str = None, drop_name: bool = False) -> pd.DataFrame:
         if file_path is None:
             file_path = Data.find_file('depreg.csv')
-        return pd.read_csv(file_path)
+        df = pd.read_csv(file_path)
+        if drop_name:
+            df = df.drop(columns=['dep_name'])
+        return df
 
 
 class Data:
-    @staticmethod
-    def find_file(file_name: str) -> str:
+    @classmethod
+    def find_file(cls, file_name: str) -> str:
         """This method searches for file_name and returns the full path to it."""
-        current_working_directory = os.getcwd()
-        for root, folders, files in os.walk('.'):
+        for root, folders, files in os.walk(cls._find_root()):
             if file_name in files:
-                return f'{current_working_directory}{root.lstrip(".")}/{file_name}'
+                return f'{root}/{file_name}'
 
-    @staticmethod
-    def find_folder(folder_name: str) -> str:
+    @classmethod
+    def find_folder(cls, folder_name: str) -> str:
         """This method searches for folder_name and returns the full path to it."""
-        current_working_directory = os.getcwd()
-        for root, folders, files in os.walk('.'):
+        for root, folders, files in os.walk(cls._find_root()):
             if folder_name in folders:
-                return f'{current_working_directory}{root.lstrip(".")}/{folder_name}'
+                return f'{root}/{folder_name}'
 
     @staticmethod
     def clean_traffic_data(df: gpd.GeoDataFrame, reset_index: bool = True) -> gpd.GeoDataFrame:
@@ -92,6 +88,11 @@ class Data:
         df = df.loc[df['tmja'].values > 0, :]
         # Since we are only interested in trucks, we remove the records that didn't see any heavy duty vehicles
         df = df.loc[df['pctPL'].values > 0, :]
+        # They mentioned in the first coaching session that road section with more than 40 % of trucks on them are a
+        # data error and should therefore be divided by 10
+        mask = df['pctPL'] > 40
+        df.loc[mask, 'pctPL'] = df.loc[mask, 'pctPL'] / 10
+
         if reset_index:
             df = df.reset_index(drop=True)
         return df
@@ -114,45 +115,6 @@ class Data:
         max_length = df_traffic['geometry'].length.max()
         df_traffic['weighted_traffic'] = df_traffic['geometry'].length / max_length * df_traffic[traffic_column]
         return df_traffic
-
-    @staticmethod
-    def convert_pd_stations_to_gpd(df_stations: pd.DataFrame, target_crs: str = 'EPSG:2154') -> gpd.GeoDataFrame:
-        """This method creates a GeoDataFrame from the stations DataFrame."""
-        df_stations = df_stations.copy(deep=True)
-        # Cleaning the coordinates column
-        df_stations['Coordinates'] = df_stations['Coordinates'].str.replace(',,', ',')
-        # Creating the column with shapely Points
-        df_stations[['y', 'x']] = df_stations['Coordinates'].str.split(',', n=1, expand=True)
-        df_stations['geometry'] = gpd.points_from_xy(x=df_stations['x'], y=df_stations['y'])
-        # Converting the DataFrame into a GeoDataFrame
-        gdf_stations = gpd.GeoDataFrame(df_stations, geometry='geometry', crs='EPSG:4326')
-        # Converting the crs to the target_crs
-        gdf_stations = gdf_stations.to_crs(crs=target_crs)
-        # Remove the columns we just created
-        gdf_stations = gdf_stations.drop(columns=['y', 'x'])
-        return gdf_stations
-
-    @staticmethod
-    def _check_exclusivity_of_road_sections(df_traffic: gpd.GeoDataFrame, threshold: Union[int, float] = 1,
-                                            geometry_column: str = 'geometry') -> bool:
-        """This method checks if all the records in df_traffic have mutually exclusive road sections. threshold defines
-        beyond how many meters of overlap a road section is not considered as mutually exclusive."""
-        for index, value in df_traffic[geometry_column]:
-            intersection = df_traffic[geometry_column].intersection(value).length.sum()
-            if (intersection - value.length) > threshold:
-                print(f'{index} has more than {threshold} meter(s) of overlap with other road sections.')
-                return False
-        return True
-
-    @staticmethod
-    def limit_gdfs_to_main_land_france(df: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-        """This method filters out records from df that contain geometry that is not inside main land France."""
-        df = df.copy(deep=True)
-        df_regions = df_regions.copy(deep=True)
-
-        main_land = df_regions[df_regions['nomnewregi'] != 'Corse']
-        mask = df.loc[:, 'geometry'].apply(lambda x: any(main_land.contains(x)))
-        return df[mask]
 
     @staticmethod
     def add_regions_to_departments(df: Union[gpd.GeoDataFrame, pd.DataFrame], df_depreg: pd.DataFrame,
@@ -239,43 +201,6 @@ class Data:
                                                         * df_traffic['tmja']).sum()
         return df_traffic
 
-    @staticmethod
-    def calculate_h2_distance(n_trucks: int, range_in_km: Union[int, float] = 400) -> Union[int, float]:
-        """This method calculates how much distance n_trucks are assumed to cover in a day. range_in_km determines how
-        far a truck is assumed to travel.
-        We make several assumptions here based on the truck driving regulation of France:
-        Based on the regulation, one driver may, on average, not drive more than 45 hours a week and at most 10 hours in
-        any given day, however, we assume that the trucks are owned by the companies -> they can change drivers once a
-        driver arrived at his/her destination.
-        The average driving speed for a truck is assumed to be 66.9 km/h which based on the information from
-        the provided H2 truck manufacturers should not be a problem (source for the average truck speed:
-        https://www.cnr.fr/download/file/publications/eld%202012.pdf, source for the max speed of H2 trucks:
-        https://www.youtube.com/watch?v=ShgYjFb4Pp8).
-        The radius of France is roughly 419 km -> most routes can be be completed within one shift
-        (https://www.ecologie.gouv.fr/temps-travail-des-conducteurs-routiers-transport-marchandises).
-        The average loading time is assumed ot be 3 hours, the average break time, which has to be taken every
-        4.5 hours, is 45 min, if a tank does not last for the 4.5 hours, an additional 15 minutes are added for
-        refueling which is otherwise assumed to be done during the break."""
-        max_daily_driving_hours = 10
-        avg_speed_in_km = 66.9
-        avg_route_length_in_km = 419.
-        avg_route_length_in_km = min(avg_route_length_in_km, max_daily_driving_hours * avg_speed_in_km)
-        max_uninterrupted_driving_time_in_hours = 4.5
-        # After max_uninterrupted_driving_time_in_hours a driver has to take a 45 min (or 0.75 hour) break
-        avg_break_time_in_hours = avg_route_length_in_km / avg_speed_in_km \
-                                  / max_uninterrupted_driving_time_in_hours * 0.75
-        # If the range is smaller than the distance covered within one interrupted driving session, extra refueling
-        # breaks have to be added. Such a break is assumed to last 15 min.
-        extra_breaks = np.ceil((max_uninterrupted_driving_time_in_hours * avg_speed_in_km / range_in_km) - 1)
-        avg_break_time_in_hours += 15 * extra_breaks
-
-        avg_loading_time_in_hours = 3
-        avg_driving_time = avg_route_length_in_km / avg_speed_in_km
-
-        shifts_per_day = 24 / (avg_driving_time + avg_break_time_in_hours + avg_loading_time_in_hours)
-        h2_distance_in_km_per_day = n_trucks * avg_route_length_in_km * shifts_per_day
-        return h2_distance_in_km_per_day
-
     @classmethod
     def add_h2_truck_traffic(cls, df_traffic: gpd.GeoDataFrame, n_trucks: int = 10000,
                              data_year: int = 2018, target_year: int = 2030) -> gpd.GeoDataFrame:
@@ -301,6 +226,43 @@ class Data:
         # would make sense to project 'truck_tmja' as well instead of using 'truck_tmja' unchanged but hey ...
         df_traffic['h2_truck_tmja'] = df_traffic['tmja'] * df_traffic['pctPL'] * h2_trucks_portion
         return df_traffic
+
+    @staticmethod
+    def calculate_h2_distance(n_trucks: int, range_in_km: Union[int, float] = 400) -> Union[int, float]:
+        """This method calculates how much distance n_trucks are assumed to cover in a day. range_in_km determines how
+        far a truck is assumed to travel.
+        We make several assumptions here based on the truck driving regulation of France:
+        Based on the regulation, one driver may, on average, not drive more than 45 hours a week and at most 10 hours in
+        any given day, however, we assume that the trucks are owned by the companies -> they can change drivers once a
+        driver arrived at his/her destination.
+        The average driving speed for a truck is assumed to be 66.9 km/h which based on the information from
+        the provided H2 truck manufacturers should not be a problem (source for the average truck speed:
+        https://www.cnr.fr/download/file/publications/eld%202012.pdf, source for the max speed of H2 trucks:
+        https://www.youtube.com/watch?v=ShgYjFb4Pp8).
+        The radius of France is roughly 419 km -> most routes can be be completed within one shift
+        (https://www.ecologie.gouv.fr/temps-travail-des-conducteurs-routiers-transport-marchandises).
+        The average loading time is assumed ot be 3 hours, the average break time, which has to be taken every
+        4.5 hours, is 45 min, if a tank does not last for the 4.5 hours, an additional 15 minutes are added for
+        refueling which is otherwise assumed to be done during the break."""
+        max_daily_driving_hours = 10
+        avg_speed_in_km = 66.9
+        avg_route_length_in_km = 419.
+        avg_route_length_in_km = min(avg_route_length_in_km, max_daily_driving_hours * avg_speed_in_km)
+        max_uninterrupted_driving_time_in_hours = 4.5
+        # After max_uninterrupted_driving_time_in_hours a driver has to take a 45 min (or 0.75 hour) break
+        avg_break_time_in_hours = (avg_route_length_in_km / avg_speed_in_km
+                                   / max_uninterrupted_driving_time_in_hours * 0.75)
+        # If the range is smaller than the distance covered within one interrupted driving session, extra refueling
+        # breaks have to be added. Such a break is assumed to last 15 min.
+        extra_breaks = np.ceil((max_uninterrupted_driving_time_in_hours * avg_speed_in_km / range_in_km) - 1)
+        avg_break_time_in_hours += 15 * extra_breaks
+
+        avg_loading_time_in_hours = 3
+        avg_driving_time = avg_route_length_in_km / avg_speed_in_km
+
+        shifts_per_day = 24 / (avg_driving_time + avg_break_time_in_hours + avg_loading_time_in_hours)
+        h2_distance_in_km_per_day = n_trucks * avg_route_length_in_km * shifts_per_day
+        return h2_distance_in_km_per_day
 
     @staticmethod
     def calculate_total_distance_covered(df_traffic: gpd.GeoDataFrame,
@@ -366,8 +328,56 @@ class Data:
         df.loc[:, 'region_name'] = df.loc[:, 'region_name'].apply(lambda x: name_mapping[x])
         return df
 
+    @staticmethod
+    def convert_pd_stations_to_gpd(df_stations: pd.DataFrame, target_crs: str = 'EPSG:2154') -> gpd.GeoDataFrame:
+        """This method creates a GeoDataFrame from the stations DataFrame."""
+        df_stations = df_stations.copy(deep=True)
+        # Cleaning the coordinates column
+        df_stations['Coordinates'] = df_stations['Coordinates'].str.replace(',,', ',')
+        # Creating the column with shapely Points
+        df_stations[['y', 'x']] = df_stations['Coordinates'].str.split(',', n=1, expand=True)
+        df_stations['geometry'] = gpd.points_from_xy(x=df_stations['x'], y=df_stations['y'])
+        # Converting the DataFrame into a GeoDataFrame
+        gdf_stations = gpd.GeoDataFrame(df_stations, geometry='geometry', crs='EPSG:4326')
+        # Converting the crs to the target_crs
+        gdf_stations = gdf_stations.to_crs(crs=target_crs)
+        # Remove the columns we just created
+        gdf_stations = gdf_stations.drop(columns=['y', 'x'])
+        return gdf_stations
 
-class Download:
+    @staticmethod
+    def limit_gdfs_to_main_land_france(df: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        """This method filters out records from df that contain geometry that is not inside main land France."""
+        df = df.copy(deep=True)
+        df_regions = df_regions.copy(deep=True)
+
+        main_land = df_regions[df_regions['nomnewregi'] != 'Corse']
+        mask = df.loc[:, 'geometry'].apply(lambda x: any(main_land.contains(x)))
+        return df[mask]
+
+    @staticmethod
+    def _check_exclusivity_of_road_sections(df_traffic: gpd.GeoDataFrame, threshold: Union[int, float] = 1,
+                                            geometry_column: str = 'geometry') -> bool:
+        """This method checks if all the records in df_traffic have mutually exclusive road sections. threshold defines
+        beyond how many meters of overlap a road section is not considered as mutually exclusive."""
+        for index, value in df_traffic[geometry_column]:
+            intersection = df_traffic[geometry_column].intersection(value).length.sum()
+            if (intersection - value.length) > threshold:
+                print(f'{index} has more than {threshold} meter(s) of overlap with other road sections.')
+                return False
+        return True
+
+    @classmethod
+    def _find_root(cls, starting_dir: str = '.') -> str:
+        """This method finds the relative location of h2_station_distributor in the current working directory. This is
+        need for the find_file and find_folder methods."""
+        while 'h2_station_distributor' not in os.listdir(starting_dir):
+            starting_dir += './.'
+            cls._find_root(starting_dir=starting_dir)
+        return starting_dir
+
+
+class DownloadData:
     raw_data_folder = 'data/raw'
 
     @classmethod
@@ -433,7 +443,7 @@ class Download:
         options.add_argument('--headless')
         options.set_preference('browser.download.dir', data_folder_path)
         options.set_preference('browser.download.folderList', 2)
-        executable_path = Data.find_file('geckodriver')
+        executable_path = Data.find_file('../geckodriver')
         driver = webdriver.Firefox(service=Service(executable_path=executable_path), options=options)
         # Loading the Google spreadsheet page
         google_doc_url = 'https://docs.google.com/spreadsheets/d/1TYjPlSC0M2VTDPkQHqLrshnkItETbSwl/edit#gid=855090481'
@@ -509,59 +519,6 @@ class Strategies:
         df_traffic['no_area'] = ~mask
         return df_traffic, areas
 
-    @staticmethod
-    def _size_buffer_for_distance(df_traffic: gpd.GeoDataFrame,
-                                  index: int,
-                                  target_distance: Union[int, float],
-                                  initial_buffer: Union[int, float] = 10000,
-                                  buffer_step: Union[int, float] = 10000,
-                                  step_direction: str = 'up') -> tuple[Union[int, float],
-                                                                       pd.Series,
-                                                                       Union[int, float],
-                                                                       shapely.Polygon]:
-        """This method provides the size of the buffer that is needed around the record at index to cover
-        target_distance when summing the traffic * road over all road sections inside the buffer.
-        target_distance is what that sum is supposed to be
-        initial_buffer is the buffer from which we start our calculation
-        buffer_step is the step size by which we want to increase/decrease the buffer
-        step_direction defines whether we want to increase the buffer from initial_buffer or decrease it"""
-        if target_distance <= 0:
-            raise ValueError('The target_distance has to be larger than 0.')
-        if initial_buffer < 0:
-            raise ValueError('The initial_buffer cannot be smaller than 0.')
-        if buffer_step <= 0:
-            raise ValueError('The buffer_step has to be larger than 0.')
-        if step_direction not in ['down', 'up']:
-            raise ValueError("The step direction can only be up or down.")
-        if step_direction == 'up':
-            comparison_operator = '<'
-        else:
-            comparison_operator = '>'
-
-        buffer = initial_buffer
-        area = df_traffic.loc[index, 'geometry'].centroid.buffer(buffer)
-        mask = df_traffic.intersects(area)
-        # covered_distance = Data.calculate_total_distance_covered(df_traffic.loc[mask, :],
-        #                                                          traffic_column='h2_truck_tmja')
-        covered_distance = Data.calculate_distance_covered_by_area(df_traffic.loc[mask, :],
-                                                                   area=area,
-                                                                   traffic_column='h2_truck_tmja')
-        while eval(f'{covered_distance}{comparison_operator}{target_distance}'):
-            # If else conditions are faster than eval
-            if step_direction == 'up':
-                buffer += buffer_step
-            else:
-                buffer -= buffer_step
-            area = df_traffic.loc[index, 'geometry'].centroid.buffer(buffer)
-            mask = df_traffic.intersects(area)
-            # covered_distance = Data.calculate_total_distance_covered(df_traffic.loc[mask, :],
-            #                                                          traffic_column='h2_truck_tmja')
-            covered_distance = Data.calculate_distance_covered_by_area(df_traffic.loc[mask, :],
-                                                                       area=area,
-                                                                       traffic_column='h2_truck_tmja')
-
-        return buffer, mask, covered_distance, area
-
     @classmethod
     def split_into_areas_station_based(cls, df_traffic: gpd.GeoDataFrame, station_size: Union[int, float],
                                        n_h2_trucks: int, rank_column: str = 'buffer_distance',
@@ -621,6 +578,72 @@ class Strategies:
             df.loc[index, ['station', 'geometry']] = cls.find_closest_station_in_area(area, df_stations)
         return df
 
+    @classmethod
+    def calculate_cost_of_stations(cls, stations: dict[str, dict[str, int]]) -> int:
+        """This method calculates the total cost of the stations. stations is assumed to have 'small', 'medium' and/or
+        'large' as first key and as value a dictionary with 'n_stations' and 'duration' as key and the number of
+        stations and the years of operation as values respectively. E.g.:
+        {'small': {'n_stations': 2, 'duration': 10},
+        'medium': {'n_stations': 5, 'duration': 10}}
+        The output will be in euros."""
+        dict_for_inital_cost = {station_type: stations[station_type]['n_stations'] for station_type in stations}
+        initial_cost = cls._calculate_initial_cost(stations=dict_for_inital_cost)
+        ongoing_cost = cls._calculate_variable_cost(stations=stations)
+        return initial_cost + ongoing_cost
+
+    @staticmethod
+    def _size_buffer_for_distance(df_traffic: gpd.GeoDataFrame,
+                                  index: int,
+                                  target_distance: Union[int, float],
+                                  initial_buffer: Union[int, float] = 10000,
+                                  buffer_step: Union[int, float] = 10000,
+                                  step_direction: str = 'up') -> tuple[Union[int, float],
+                                                                       pd.Series,
+                                                                       Union[int, float],
+                                                                       shapely.Polygon]:
+        """This method provides the size of the buffer that is needed around the record at index to cover
+        target_distance when summing the traffic * road over all road sections inside the buffer.
+        target_distance is what that sum is supposed to be
+        initial_buffer is the buffer from which we start our calculation
+        buffer_step is the step size by which we want to increase/decrease the buffer
+        step_direction defines whether we want to increase the buffer from initial_buffer or decrease it"""
+        if target_distance <= 0:
+            raise ValueError('The target_distance has to be larger than 0.')
+        if initial_buffer < 0:
+            raise ValueError('The initial_buffer cannot be smaller than 0.')
+        if buffer_step <= 0:
+            raise ValueError('The buffer_step has to be larger than 0.')
+        if step_direction not in ['down', 'up']:
+            raise ValueError("The step direction can only be up or down.")
+        if step_direction == 'up':
+            comparison_operator = '<'
+        else:
+            comparison_operator = '>'
+
+        buffer = initial_buffer
+        area = df_traffic.loc[index, 'geometry'].centroid.buffer(buffer)
+        mask = df_traffic.intersects(area)
+        # covered_distance = Data.calculate_total_distance_covered(df_traffic.loc[mask, :],
+        #                                                          traffic_column='h2_truck_tmja')
+        covered_distance = Data.calculate_distance_covered_by_area(df_traffic.loc[mask, :],
+                                                                   area=area,
+                                                                   traffic_column='h2_truck_tmja')
+        while eval(f'{covered_distance}{comparison_operator}{target_distance}'):
+            # If else conditions are faster than eval
+            if step_direction == 'up':
+                buffer += buffer_step
+            else:
+                buffer -= buffer_step
+            area = df_traffic.loc[index, 'geometry'].centroid.buffer(buffer)
+            mask = df_traffic.intersects(area)
+            # covered_distance = Data.calculate_total_distance_covered(df_traffic.loc[mask, :],
+            #                                                          traffic_column='h2_truck_tmja')
+            covered_distance = Data.calculate_distance_covered_by_area(df_traffic.loc[mask, :],
+                                                                       area=area,
+                                                                       traffic_column='h2_truck_tmja')
+
+        return buffer, mask, covered_distance, area
+
     @staticmethod
     def _calculate_refuelings_per_day(h2_distance: Union[int, float], range_in_km: Union[int, float],
                                       min_fuel_level: float = 0.2) -> Union[int, float]:
@@ -640,6 +663,11 @@ class Strategies:
                                 h2_in_kg_per_km: Union[int, float] = 0.08) -> Union[int, float]:
         """This method calculates how many km can be driven with h2_fuel_in_kg kilos of H2."""
         return h2_fuel_in_kg / h2_in_kg_per_km
+
+    @staticmethod
+    def _calculate_h2_transportation_cost(h2_fuel_in_kg: Union[int, float], transport_distance_in_km: Union[int, float],
+                                          cost_per_kg_per_km: float = 0.008) -> float:
+        return h2_fuel_in_kg * transport_distance_in_km * cost_per_kg_per_km
 
     @staticmethod
     def _calculate_initial_cost(stations: dict[str, int]) -> int:
@@ -671,19 +699,6 @@ class Strategies:
                 var_cost *= stations[type_key][key]
             total_cost += var_cost
         return int(total_cost)
-
-    @classmethod
-    def calculate_cost(cls, stations: dict[str, dict[str, int]]) -> int:
-        """This method calculates the total cost of the stations. stations is assumed to have 'small', 'medium' and/or
-        'large' as first key and as value a dictionary with 'n_stations' and 'duration' as key and the number of
-        stations and the years of operation as values respectively. E.g.:
-        {'small': {'n_stations': 2, 'duration': 10},
-        'medium': {'n_stations': 5, 'duration': 10}}
-        The output will be in euros."""
-        dict_for_inital_cost = {station_type: stations[station_type]['n_stations'] for station_type in stations}
-        initial_cost = cls._calculate_initial_cost(stations=dict_for_inital_cost)
-        ongoing_cost = cls._calculate_variable_cost(stations=stations)
-        return initial_cost + ongoing_cost
 
 
 class Plots:
@@ -796,80 +811,3 @@ class Plots:
         for i in range(n_colors):
             colors.append(cmap(i))
         return colors
-
-
-def load_stations(path: str = None) -> pd.DataFrame:
-    if path is None:
-        path = config['stations_file']
-    try:
-        stations = pd.read_csv('../' + path)
-    except FileNotFoundError:
-        stations = pd.read_csv(config['stations_file'])
-    stations[['lat', 'lon', '1']] = stations.Coordinates.str.split(",", expand=True)
-    stations = stations.drop(columns=['1'])
-    stations = stations.drop('H2 Conversion', axis=1)
-    return stations
-
-
-def load_rrn_vsmap(path: str = None) -> pd.DataFrame:
-    if path is None:
-        path = config['rrn_vsmap_file']
-    try:
-        rrn_vsmap = gpd.read_file('../' + path)
-    except FileNotFoundError:
-        rrn_vsmap = gpd.read_file(path)
-    rrn_vsmap[['dep', 'route', '1', '2', '3', '4']] = rrn_vsmap.route.str.split(" ", expand=True)
-    rrn_vsmap = rrn_vsmap.drop(columns=['1', '2', '3', '4'])
-    return rrn_vsmap
-
-
-def load_rrn_bornage(path: str = None) -> pd.DataFrame:
-    if path is None:
-        path = config['rrn_bornage_file']
-    try:
-        rrn_bornage = gpd.read_file('../' + path)
-    except FileNotFoundError:
-        rrn_bornage = gpd.read_file(path)
-    return rrn_bornage
-
-
-def load_regions(path: str = None) -> pd.DataFrame:
-    if path is None:
-        path = config['regions_file']
-    try:
-        regions = gpd.read_file('../' + path)
-    except FileNotFoundError:
-        regions = gpd.read_file(path)
-    regions.drop(regions[regions['nomnewregi'] == 'Corse'].index, inplace=True)
-    return regions
-
-
-def load_traffic(path: str = None) -> pd.DataFrame:
-    if path is None:
-        path = config['traffic_file']
-    try:
-        traffic = gpd.read_file('../' + path)
-    except FileNotFoundError:
-        traffic = gpd.read_file(path)
-    return traffic
-
-
-def load_depreg(path: str = None) -> pd.DataFrame:
-    if path is None:
-        path = config['depreg_file']
-    try:
-        depreg = pd.read_csv('../' + path)
-    except FileNotFoundError:
-        depreg = pd.read_csv(path)
-    depreg.drop(columns=['dep_name'], inplace=True)
-    return depreg
-
-
-def load_airesPL(path: str = None) -> pd.DataFrame:
-    if path is None:
-        path = config['airesPL']
-    try:
-        airesPL = gpd.read_file('../' + path)
-    except FileNotFoundError:
-        airesPL = gpd.read_file(path)
-    return airesPL

@@ -1,14 +1,20 @@
-import numpy as np
-import pandas as pd
-pd.set_option('display.max_columns', 500)
-import yaml
-import geopandas as gpd
 import warnings
+import yaml
+
+import pandas as pd
+try:
+    from pandas.core.common import SettingWithCopyWarning
+except ImportError:
+    from pandas.errors import SettingWithCopyWarning
+
+from utils.helpers import Data
+
 warnings.simplefilter(action='ignore', category=FutureWarning)
-from pandas.core.common import SettingWithCopyWarning
 warnings.simplefilter(action="ignore", category=SettingWithCopyWarning)
 
-with open("../config.yaml") as f:
+pd.set_option('display.max_columns', 500)
+
+with open(Data.find_file("config.yaml")) as f:
     config = yaml.safe_load(f)
 
 
@@ -26,7 +32,7 @@ def check_parameters_quality(parameters: dict):
         raise ValueError("The prefered_order_of_station_type must contain 'small', 'medium' and 'large' and nothing else")
 
 
-def compute_quantity_h2(parameters:dict, manufacturers_desc:dict, verbose:bool=True) -> dict[int, dict]:
+def compute_quantity_h2(parameters:dict, manufacturers_desc:dict, verbose:bool=True) -> [int, dict]:
     """ This function... """
     
     check_parameters_quality(parameters)
