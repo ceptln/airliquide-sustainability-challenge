@@ -1,5 +1,5 @@
 geopandas
-matplotlib<3.7
+matplotlib
 pandas
 notebook
 numpy
@@ -8,3 +8,6 @@ selenium
 shapely
 streamlit
 PyYAML
+plotly
+pyproj
+streamlit-folium
