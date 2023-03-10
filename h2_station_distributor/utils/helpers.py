@@ -65,21 +65,19 @@ class LoadData:
 
 
 class Data:
-    @staticmethod
-    def find_file(file_name: str) -> str:
+    @classmethod
+    def find_file(cls, file_name: str) -> str:
         """This method searches for file_name and returns the full path to it."""
-        current_working_directory = os.getcwd()
-        for root, folders, files in os.walk('.'):
+        for root, folders, files in os.walk(cls._find_root()):
             if file_name in files:
-                return f'{current_working_directory}{root.lstrip(".")}/{file_name}'
+                return f'{root}/{file_name}'
 
-    @staticmethod
-    def find_folder(folder_name: str) -> str:
+    @classmethod
+    def find_folder(cls, folder_name: str) -> str:
         """This method searches for folder_name and returns the full path to it."""
-        current_working_directory = os.getcwd()
-        for root, folders, files in os.walk('..'):
+        for root, folders, files in os.walk(cls._find_root()):
             if folder_name in folders:
-                return f'{current_working_directory}{root.lstrip(".")}/{folder_name}'
+                return f'{root}/{folder_name}'
 
     @staticmethod
     def clean_traffic_data(df: gpd.GeoDataFrame, reset_index: bool = True) -> gpd.GeoDataFrame:
@@ -90,6 +88,11 @@ class Data:
         df = df.loc[df['tmja'].values > 0, :]
         # Since we are only interested in trucks, we remove the records that didn't see any heavy duty vehicles
         df = df.loc[df['pctPL'].values > 0, :]
+        # They mentioned in the first coaching session that road section with more than 40 % of trucks on them are a
+        # data error and should therefore be divided by 10
+        mask = df['pctPL'] > 40
+        df.loc[mask, 'pctPL'] = df.loc[mask, 'pctPL'] / 10
+
         if reset_index:
             df = df.reset_index(drop=True)
         return df
@@ -363,6 +366,15 @@ class Data:
                 print(f'{index} has more than {threshold} meter(s) of overlap with other road sections.')
                 return False
         return True
+
+    @classmethod
+    def _find_root(cls, starting_dir: str = '.') -> str:
+        """This method finds the relative location of h2_station_distributor in the current working directory. This is
+        need for the find_file and find_folder methods."""
+        while 'h2_station_distributor' not in os.listdir(starting_dir):
+            starting_dir += './.'
+            cls._find_root(starting_dir=starting_dir)
+        return starting_dir
 
 
 class DownloadData:

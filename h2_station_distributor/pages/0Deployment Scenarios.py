@@ -5,11 +5,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from utils.load_data import *
 from utils import generate_regional_breakdown
 from utils import size_the_network
 from utils.helpers import LoadData
-
 
 warnings.filterwarnings("ignore")
 st.set_page_config(page_title='H2 Stations Plan', page_icon=":smiley:", layout="wide", initial_sidebar_state="expanded")
@@ -46,11 +44,11 @@ depreg = LoadData.load_depreg(drop_name=True)
 
 manufacturers_desc = {
     'man_1': {'name': 'Daimler Truck & Volvo', 'prototype': 'GenH2 Truck', 'technology': 'Hydrogen fuel cell',
-              'tank_size': 80, 'autonomy': 1000, 'type_of_PL': 'long-distance'}
-    , 'man_2': {'name': 'DAF', 'prototype': 'XF, XG and XG+', 'technology': 'Internal combustion', 'tank_size': 15,
-                'autonomy': 150, 'type_of_PL': 'short-distance'}
-    , 'man_3': {'name': 'Iveco & Nikola & Hyundai', 'prototype': 'Nikola TRE', 'technology': 'Hydrogen fuel cell',
-                'tank_size': 32, 'autonomy': 400, 'type_of_PL': 'long-distance'}
+              'tank_size': 80, 'autonomy': 1000, 'type_of_PL': 'long-distance'},
+    'man_2': {'name': 'DAF', 'prototype': 'XF, XG and XG+', 'technology': 'Internal combustion', 'tank_size': 15,
+              'autonomy': 150, 'type_of_PL': 'short-distance'},
+    'man_3': {'name': 'Iveco & Nikola & Hyundai', 'prototype': 'Nikola TRE', 'technology': 'Hydrogen fuel cell',
+              'tank_size': 32, 'autonomy': 400, 'type_of_PL': 'long-distance'}
 }
 
 stations_desc = {
@@ -63,18 +61,18 @@ stations_desc = {
 }
 
 parameters = {
-    'year': 2030
-    , 'nb_trucks': 10000
-    , 'manufacturers_desc': manufacturers_desc
-    , 'split_manufacturer': {'man_1': 0.4, 'man_2': 0.4, 'man_3': 0.2}
-    , 'activation_rate': 0.8
-    , 'avg_daily_km': {'short-distance': 290, 'long-distance': 458}
-    , 'stations_desc': stations_desc
-    , 'split_station_type': {'small': 1 / 2, 'medium': 1 / 3, 'large': 1 / 6}
-    , 'average_tank_filling_rate_before_refill': 0.2
-    , 'security_buffer': 0.2
-    , 'strategic_positioning_index': 1
-    , 'prefered_order_of_station_type': ['small', 'medium', 'large']
+    'year': 2030,
+    'nb_trucks': 10000,
+    'manufacturers_desc': manufacturers_desc,
+    'split_manufacturer': {'man_1': 0.4, 'man_2': 0.4, 'man_3': 0.2},
+    'activation_rate': 0.8,
+    'avg_daily_km': {'short-distance': 290, 'long-distance': 458},
+    'stations_desc': stations_desc,
+    'split_station_type': {'small': 1 / 2, 'medium': 1 / 3, 'large': 1 / 6},
+    'average_tank_filling_rate_before_refill': 0.2,
+    'security_buffer': 0.2,
+    'strategic_positioning_index': 1,
+    'prefered_order_of_station_type': ['small', 'medium', 'large']
 }
 
 st.header("Select a strategy")
@@ -132,7 +130,6 @@ regional_strategies = size_the_network.define_best_regional_strategies(parameter
                                                                        stations_desc=stations_desc,
                                                                        region_breakdown=region_breakdown,
                                                                        verbose=False)
-
 
 data2 = regional_strategies.drop(12, axis=0)
 
