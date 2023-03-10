@@ -1,5 +1,5 @@
 geopandas
-matplotlib<3.7
+matplotlib
 pandas
 notebook
 numpy

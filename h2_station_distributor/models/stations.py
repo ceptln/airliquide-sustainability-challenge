@@ -98,7 +98,7 @@ class Stations:
 
         # Here distance to aires is not that important
         points_dist["fitness"] = (
-            1.5 * points_dist["trucks"] + 0.1 * points_dist["mindist"]
+            1.5 * points_dist["trucks"] - 0.2 * points_dist["mindist"]
         )
         points_dist["fitness"] = points_dist["fitness"].apply(lambda x: max(x, 0))
         return points_dist
@@ -126,7 +126,7 @@ class Stations:
             mind_others.append(mint)
         points_dist["mind_others"] = mind_others
 
-        points_dist["fitness"] = points_dist["fitness"] + 0.5 * points_dist[
+        points_dist["fitness"] = points_dist["fitness"] + 1.5 * points_dist[
             "mind_others"
         ] / max(mind_others)
         points_dist["fitness"] = points_dist["fitness"].apply(lambda x: max(x, 0))
@@ -158,7 +158,7 @@ class Stations:
             mind_others.append(tpt)
         points_dist["mind_others"] = mind_others
 
-        points_dist["fitness"] = points_dist["fitness"] + 2 * points_dist[
+        points_dist["fitness"] = points_dist["fitness"] + 1.5 * points_dist[
             "mind_others"
         ] / max(mind_others)
         points_dist["fitness"] = points_dist["fitness"].apply(lambda x: max(x, 0))
@@ -188,7 +188,7 @@ class Stations:
                 for k in ra:
                     if math.dist(temp.iloc[j, 1], temp.iloc[k, 1]) < t and k != j:
                         t = math.dist(temp.iloc[j, 1], temp.iloc[k, 1])
-            fit -= t / max
+            fit += 2 * t / max
 
             if len(best) == 0 or fit > best[0]:
                 best = [fit, t, temp.reset_index().iloc[:, 1:]]

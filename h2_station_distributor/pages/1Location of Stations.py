@@ -4,6 +4,7 @@ import streamlit as st
 from models.stations import Stations
 from streamlit_folium import st_folium
 import pyproj
+import folium
 
 warnings.filterwarnings("ignore")
 st.set_page_config(
@@ -31,6 +32,32 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+if "big" not in st.session_state:
+    st.session_state.big = 1
+if "medium" not in st.session_state:
+    st.session_state.medium = 1
+if "small" not in st.session_state:
+    st.session_state.small = 1
+
+
+def change_big_sate():
+    st.session_state.big = large
+
+
+def change_medium_state():
+    st.session_state.medium = medium
+
+
+def change_small_state():
+    st.session_state.small = small
+
+
+@st.cache_data
+def calculate_output(department, large, medium, small):
+    stations = Stations()
+    return stations.solution(department, large, medium, small)
+
+
 departments = list(Stations().shapefile["depPrF"].unique())
 
 st.header("Select a department")
@@ -48,26 +75,41 @@ with st.expander("Set parameters"):
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        small = st.number_input("Small", min_value=0, value=0, step=1, on_change=None)
+        small = st.number_input(
+            "Small", min_value=0, value=1, step=1, on_change=change_big_sate
+        )
     with col2:
-        medium = st.number_input("Medium", min_value=0, value=0, step=1, on_change=None)
+        medium = st.number_input(
+            "Medium", min_value=0, value=1, step=1, on_change=change_medium_state
+        )
     with col3:
-        large = st.number_input("Large", min_value=0, value=0, step=1, on_change=None)
+        large = st.number_input(
+            "Large", min_value=0, value=1, step=1, on_change=change_small_state
+        )
 
 
-stations = Stations()
-output = stations.solution(department, small, medium, large)
-
-# Define Lambert 93 and WGS84 coordinate systems
+output = calculate_output(department, large, medium, small)
 lambert93 = pyproj.Proj("+init=EPSG:2154")
 wgs84 = pyproj.Proj("+init=EPSG:4326")
-# Convert from Lambert 93 to WGS84
-lon, lat = pyproj.transform(lambert93, wgs84, x, y)
+# Convert the Lambert 93 coordinates to latitude and longitude
+output["lon"], output["lat"] = pyproj.transform(
+    lambert93, wgs84, output["coords"].str[0].values, output["coords"].str[1].values
+)
+
+# Calculate the mean latitude and longitude values
+mean_lat = output["lat"].mean()
+mean_lon = output["lon"].mean()
+
+m = folium.Map(location=[mean_lat, mean_lon], zoom_start=7.5)
+for index, row in output.iterrows():
+    x, y, type = row["lat"], row["lon"], row["type"]
+    if type == "big":
+        color = "red"
+    elif type == "medium":
+        color = "blue"
+    else:
+        color = "green"
+    folium.Marker([x, y], tooltip=type, popup=type, color=color).add_to(m)
 
 
-# with st.echo():
-#         m = folium.Map(location=[39.949610, -75.150282], zoom_start=16)
-#         tooltip = "Liberty Bell"
-#         folium.Marker(
-#             [39.949610, -75.150282], popup="Liberty Bell", tooltip=tooltip
-#         ).add_to(m)
+out = st_folium(m, width=1200, height=500)
