@@ -7,4 +7,4 @@ RUN pip install poetry && poetry config virtualenvs.create false && poetry insta
 
 COPY . /app/
 
-CMD ["poetry", "run", "streamlit", "run", "Home.py"]
+CMD ["poetry", "run", "streamlit", "run", "h2_station_distributor/Home.py"]
