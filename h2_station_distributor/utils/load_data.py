@@ -1,13 +1,19 @@
 from __future__ import annotations
-
-import geopandas as gpd
-import pandas as pd
 import warnings
 import yaml
 
+import geopandas as gpd
+import pandas as pd
+
+from utils.helpers import Data
+
 warnings.simplefilter('ignore', FutureWarning)
 
-with open("../config.yaml") as f:
+with open('/Users/charlesnicholas/Documents/Sustainability challenge/h2_station_distributor/config.yaml') as f:
+    print('Opened')
+
+with open(Data.find_file("config.yaml")) as f:
+    print(f.name)
     config = yaml.safe_load(f)
 
 

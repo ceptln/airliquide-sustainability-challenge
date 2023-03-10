@@ -1,12 +1,14 @@
-import numpy as np
-import pandas as pd
-pd.set_option('display.max_columns', 500)
-import yaml
-import geopandas as gpd
 import warnings
+
+import pandas as pd
+try:
+    from pandas.core.common import SettingWithCopyWarning
+except ImportError:
+    from pandas.errors import SettingWithCopyWarning
+
 warnings.simplefilter(action='ignore', category=FutureWarning)
-from pandas.core.common import SettingWithCopyWarning
 warnings.simplefilter(action="ignore", category=SettingWithCopyWarning)
+pd.set_option('display.max_columns', 500)
 
 
 def clean_traffic_df(traffic:pd.DataFrame)-> pd.DataFrame:

@@ -1,4 +1,10 @@
 from __future__ import annotations
+import io
+import os
+import requests
+import time
+from typing import Union
+import zipfile
 
 import geopandas as gpd
 import shapely
@@ -11,13 +17,6 @@ from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.firefox.service import Service
-
-import io
-import os
-import requests
-import time
-from typing import Union
-import zipfile
 
 
 class LoadData:
@@ -34,12 +33,16 @@ class LoadData:
         return df
 
     @staticmethod
-    def load_regions(file_path: str = None, translate_regions_to_official_names: bool = True) -> gpd.GeoDataFrame:
+    def load_regions(file_path: str = None, translate_regions_to_official_names: bool = True,
+                     exclude_corsica: bool = True) -> gpd.GeoDataFrame:
         if file_path is None:
             file_path = Data.find_file('regions_2016.shp')
         df = gpd.read_file(file_path)
         if translate_regions_to_official_names:
             df = Data.translate_regions_regions_to_official_names(df_regions=df)
+        if exclude_corsica:
+            df = df.loc[df['nomnewregi'] != 'Corse', :]
+            df = df.reset_index(drop=True)
         return df
 
     @staticmethod
@@ -52,10 +55,13 @@ class LoadData:
         return df
 
     @staticmethod
-    def load_depreg(file_path: str = None) -> pd.DataFrame:
+    def load_depreg(file_path: str = None, drop_name: bool = False) -> pd.DataFrame:
         if file_path is None:
             file_path = Data.find_file('depreg.csv')
-        return pd.read_csv(file_path)
+        df = pd.read_csv(file_path)
+        if drop_name:
+            df = df.drop(columns=['dep_name'])
+        return df
 
 
 class Data:
@@ -63,7 +69,7 @@ class Data:
     def find_file(file_name: str) -> str:
         """This method searches for file_name and returns the full path to it."""
         current_working_directory = os.getcwd()
-        for root, folders, files in os.walk('..'):
+        for root, folders, files in os.walk('.'):
             if file_name in files:
                 return f'{current_working_directory}{root.lstrip(".")}/{file_name}'
 
@@ -359,7 +365,7 @@ class Data:
         return True
 
 
-class Download:
+class DownloadData:
     raw_data_folder = 'data/raw'
 
     @classmethod
@@ -561,7 +567,7 @@ class Strategies:
         return df
 
     @classmethod
-    def calculate_cost(cls, stations: dict[str, dict[str, int]]) -> int:
+    def calculate_cost_of_stations(cls, stations: dict[str, dict[str, int]]) -> int:
         """This method calculates the total cost of the stations. stations is assumed to have 'small', 'medium' and/or
         'large' as first key and as value a dictionary with 'n_stations' and 'duration' as key and the number of
         stations and the years of operation as values respectively. E.g.:
@@ -645,6 +651,11 @@ class Strategies:
                                 h2_in_kg_per_km: Union[int, float] = 0.08) -> Union[int, float]:
         """This method calculates how many km can be driven with h2_fuel_in_kg kilos of H2."""
         return h2_fuel_in_kg / h2_in_kg_per_km
+
+    @staticmethod
+    def _calculate_h2_transportation_cost(h2_fuel_in_kg: Union[int, float], transport_distance_in_km: Union[int, float],
+                                          cost_per_kg_per_km: float = 0.008) -> float:
+        return h2_fuel_in_kg * transport_distance_in_km * cost_per_kg_per_km
 
     @staticmethod
     def _calculate_initial_cost(stations: dict[str, int]) -> int:

@@ -5,4 +5,5 @@ numpy
 requests
 selenium
 shapely
+streamlit
 PyYAML
