@@ -8,3 +8,4 @@ selenium
 shapely
 streamlit
 PyYAML
+plotly
