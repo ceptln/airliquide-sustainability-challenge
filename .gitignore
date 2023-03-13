@@ -142,5 +142,5 @@ dmypy.json
 # OS specific files/folders
 .DS_Store
 
-# Other files
-*.pdf
+# # Other files
+# *.pdf
