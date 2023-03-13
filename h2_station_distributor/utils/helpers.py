@@ -273,12 +273,40 @@ class Data:
         return (df_traffic[traffic_column] * df_traffic['geometry'].length / 1000).sum()
 
     @staticmethod
-    def calculate_distance_covered_by_area(df_traffic: Union[gpd.GeoDataFrame],
+    def calculate_distance_covered_by_area(df_traffic: gpd.GeoDataFrame,
                                            area: shapely.Polygon,
                                            traffic_column: str = 'truck_tmja') -> Union[int, float]:
         """This method calculates teh total distance covered by all trucks inside area in km. It is assumed that
         the records contain mutually exclusive road sections."""
         return (df_traffic[traffic_column] * df_traffic.intersection(area).length / 1000).sum()
+
+    @staticmethod
+    def calculate_distance_to_nearest_logistic_hub(df_traffic: gpd.GeoDataFrame,
+                                                   df_logistic_hubs: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        """This method calculates the distance in meters between each road section and its nearest logistic hub. The
+        location of a logistic hub is defined by its center. The distance is saved in new column called
+        'distance_to_next_hub'."""
+        df_traffic = df_traffic.copy(deep=True)
+        df_traffic['distance_to_next_hub'] = df_traffic.distance(df_logistic_hubs.centroid[0])
+        df_traffic['new_distance'] = df_traffic['distance_to_next_hub']
+        # Looping over all logistic hubs
+        for point in df_logistic_hubs.centroid:
+            # Assigning the distance between the hub and all road sections to a new column
+            df_traffic['new_distance'] = df_traffic.distance(point)
+            # Assigning the smaller value between the newly calculated distances and the previous smallest distances
+            # to 'distance_to_next_hub'
+            df_traffic['distance_to_next_hub'] = df_traffic[['distance_to_next_hub', 'new_distance']].min(axis=1)
+        # We don't need 'new_distance' anymore
+        df_traffic = df_traffic.drop(columns=['new_distance'])
+        return df_traffic
+
+    @staticmethod
+    def calculate_distance_to_nearest_road(df_traffic: gpd.GeoDataFrame, point: shapely.Point) -> gpd.GeoDataFrame:
+        """This method calculates the distance between each road section and point. The distance is saved in a new
+        column called 'distance_to_point'."""
+        df_traffic = df_traffic.copy(deep=True)
+        df_traffic['distance_to_point'] = df_traffic.distance(point)
+        return df_traffic
 
     @staticmethod
     def translate_regions_regions_to_official_names(df_regions: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -592,6 +620,16 @@ class Strategies:
         initial_cost = cls._calculate_initial_cost(stations=dict_for_inital_cost)
         ongoing_cost = cls._calculate_variable_cost(stations=stations)
         return initial_cost + ongoing_cost
+
+    @staticmethod
+    def add_score_for_point(df_traffic: gpd.GeoDataFrame, df_logistic_hubs: gpd.GeoDataFrame,
+                            point: shapely.Point) -> gpd.GeoDataFrame:
+        """This method adds a column with the score of each road section, that will then define where a station is
+        going to be built.
+        It is assumed that df_traffic contains a column with the """
+        df_traffic = Data.calculate_distance_to_nearest_logistic_hub(df_traffic, df_logistic_hubs)
+        df_traffic = Data.calculate_distance_to_nearest_road(df_traffic, point)
+        df_traffic = df_traffic
 
     @staticmethod
     def _size_buffer_for_distance(df_traffic: gpd.GeoDataFrame,
