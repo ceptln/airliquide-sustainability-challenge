@@ -12,6 +12,7 @@ from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 from selenium import webdriver
 from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.by import By
@@ -525,7 +526,8 @@ class Strategies:
                                        buffer_step: Union[int, float] = 10000) -> tuple[gpd.GeoDataFrame,
                                                                                         dict[str, shapely.Polygon]]:
         """This method creates areas based on the provided station size (in kg of H2 they can refuel) and the number of
-        H2 trucks on the road."""
+        H2 trucks on the road.
+        station_size is in kg of H2 a station stores"""
         df_traffic = df_traffic.copy(deep=True)
         distance_to_cover = Data.calculate_h2_distance(n_trucks=n_h2_trucks)
         distance_covered_by_station = cls._calculate_km_from_fuel(station_size)
@@ -703,16 +705,16 @@ class Strategies:
 
 class Plots:
     @staticmethod
-    def plot_roads_over_regions(df_traffic: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame) -> None:
+    def plot_roads_over_regions(df_traffic: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame) -> plt.Figure:
         """This method plots the road network over a map of France."""
         fig, ax = plt.subplots()
         df_regions.plot(ax=ax)
         df_traffic.plot(ax=ax, color='red')
         ax.set_title('Road network of France')
-        plt.show()
+        return fig
 
     @staticmethod
-    def plot_traffic_per_region(df_traffic: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame, df_depreg) -> None:
+    def plot_traffic_per_region(df_traffic: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame, df_depreg) -> plt.Figure:
         """This method maps the total daily traffic per region."""
         t_with_r = Data.add_regions_to_departments(df_traffic, df_depreg)
         t_with_r_and_s = Data.add_region_shapes(t_with_r, df_regions).set_geometry('region_geometry')
@@ -722,10 +724,10 @@ class Plots:
         fig, ax = plt.subplots()
         plot_data.plot(ax=ax, column='tmja', edgecolor='black', legend=True, legend_kwds={'label': 'Traffic per day'})
         ax.set_title('Daily traffic in France')
-        plt.show()
+        return fig
 
     @classmethod
-    def plot_calculated_areas(cls, df_areas: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame) -> None:
+    def plot_calculated_areas(cls, df_areas: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame) -> plt.Figure:
         """This method plots the roads on top of France, with a color indicating which area a road section belongs to.
         df_areas is assumed to contain a geometry column as well as one or more boolean columns starting with 'area_'
         telling which record belong to which area (as output by Strategies.split_into_areas()), as well as a column
@@ -761,23 +763,19 @@ class Plots:
             frameon=False,
             shadow=False)
         fig.tight_layout()
+        return fig
 
     @classmethod
-    def plot_chosen_stations_over_optimal_locations(cls, df_station_distribution: gpd.GeoDataFrame,
-                                                    areas: dict[str, shapely.Polygon],
-                                                    df_regions: gpd.GeoDataFrame) -> None:
-        """This method plots the stations chosen over the locations picked to put a station (the centers of the areas).
-        """
+    def plot_chosen_stations(cls, df_station_distribution: gpd.GeoDataFrame,
+                             df_regions: gpd.GeoDataFrame) -> plt.Figure:
+        """This method displays the chosen locations of the H2 stations in France."""
         fig, ax = plt.subplots()
         df_regions.plot(ax=ax)
-        df_areas = gpd.GeoDataFrame([areas]).T
-        df_areas = df_areas.rename(columns={0: 'geometry'}).set_geometry('geometry')
-        df_areas.centroid.plot(ax=ax, color='red', markersize=10)
         df_station_distribution.plot(ax=ax, color='lightgreen', markersize=10)
-        ax.set_title('Optimal location vs actual station')
+        ax.set_title('H2 charging stations')
         # Adding the legend for the different areas
-        custom_handles = cls._create_legend_handles(colors=['red', 'lightgreen'],
-                                                    labels=['optimal location', 'nearest station'])
+        custom_handles = cls._create_legend_handles(colors=['lightgreen'],
+                                                    labels=['H2 station'])
         existing_handles, _ = ax.get_legend_handles_labels()
         ax.legend(
             handles=[
@@ -789,6 +787,111 @@ class Plots:
             frameon=False,
             shadow=False)
         fig.tight_layout()
+        return fig
+
+    @classmethod
+    def plot_chosen_stations_over_optimal_locations(cls, df_station_distribution: gpd.GeoDataFrame,
+                                                    areas: dict[str, shapely.Polygon],
+                                                    df_regions: gpd.GeoDataFrame) -> plt.Figure:
+        """This method plots the stations chosen over the locations picked to put a station (the centers of the areas).
+        """
+        fig, ax = plt.subplots()
+        df_regions.plot(ax=ax)
+        df_areas = gpd.GeoDataFrame([areas]).T
+        df_areas = df_areas.rename(columns={0: 'geometry'}).set_geometry('geometry')
+        df_areas.centroid.plot(ax=ax, color='red', markersize=10)
+        df_station_distribution.plot(ax=ax, color='lightgreen', markersize=10)
+        ax.set_title('Optimal location vs actual station')
+        # Adding the legend for the different areas
+        custom_handles = cls._create_legend_handles(colors=['red', 'lightgreen'],
+                                                    labels=['Optimal location', 'Nearest station'])
+        existing_handles, _ = ax.get_legend_handles_labels()
+        ax.legend(
+            handles=[
+                *existing_handles,
+                *custom_handles],
+            title="",
+            loc=(1.04, 0.9),
+            ncol=1,
+            frameon=False,
+            shadow=False)
+        fig.tight_layout()
+        return fig
+
+    @staticmethod
+    def plotly_plot_chosen_stations(df_station_distribution: gpd.GeoDataFrame,
+                                    df_regions: gpd.GeoDataFrame) -> go.Figure:
+        """This method mirrors plot_chosen_stations, but the plotly library is used instead of matplotlib."""
+        # Defining that don't want a background: no grid, no axis
+        layout = go.Layout(plot_bgcolor='rgba(0,0,0,0)', xaxis={'visible': False}, yaxis={'visible': False})
+        # Setting up a graph object
+        fig = go.Figure(layout=layout)
+        # Plotting the regions
+        for index, geometry in df_regions['geometry'].items():
+            # Polygons and MultiPolygons have to be treated differently
+            if isinstance(geometry, shapely.Polygon):
+                x, y = geometry.exterior.coords.xy
+                fig.add_trace(go.Scatter(x=list(x), y=list(y),
+                                         fill='toself',
+                                         line={'color': '#444445', 'width': 1},
+                                         fillcolor='rgb(60, 117, 175)',
+                                         mode='lines',
+                                         text=f"Region: {df_regions.loc[index, 'nomnewregi']}",
+                                         hoverinfo='text',
+                                         showlegend=False))
+            else:
+                # MultiPolygons first have to be split up into individual Polygons
+                for p in geometry.geoms:
+                    x, y = p.exterior.coords.xy
+                    fig.add_trace(go.Scatter(x=list(x), y=list(y),
+                                             fill='toself',
+                                             line={'color': '#444445', 'width': 1},
+                                             fillcolor='rgb(60, 117, 175)',
+                                             mode='lines',
+                                             text=f"Region: {df_regions.loc[index, 'nomnewregi']}",
+                                             hoverinfo='text',
+                                             showlegend=False))
+        # Plotting the stations
+        fig.add_trace(go.Scatter(x=df_station_distribution['geometry'].x, y=df_station_distribution['geometry'].y,
+                                 mode='markers',
+                                 line_color='rgb(166, 235, 154)',
+                                 hovertemplate='Station: %{text}<extra></extra>',
+                                 text=df_station_distribution['station'],
+                                 showlegend=True,
+                                 name='H2 station'))
+        # Unsqueezing the plot
+        fig.update_yaxes(scaleanchor="x", scaleratio=1)
+        # Setting the plot title
+        fig.update_layout(title={'text': 'H2 charging stations', 'x': 0.5})
+        return fig
+
+    @classmethod
+    def plotly_plot_chosen_stations_over_optimal_locations(cls, df_station_distribution: gpd.GeoDataFrame,
+                                                           areas: dict[str, shapely.Polygon],
+                                                           df_regions: gpd.GeoDataFrame) -> go.Figure:
+        """This method mirrors plot_chosen_stations_over_optimal_locations, except that the plotly library is used."""
+        # Loading the figure with the chosen stations
+        fig = cls.plotly_plot_chosen_stations(df_station_distribution, df_regions)
+        # We change the legend entry of the stations
+        fig['data'][-1]['name'] = 'Nearest station'
+        # Adding a trace with the optimal location (which is assumed to be the center of the areas)
+        x = [areas[key].centroid.x for key in areas]
+        y = [areas[key].centroid.y for key in areas]
+        fig.add_trace(go.Scatter(x=x, y=y,
+                                 mode='markers',
+                                 line_color='red',
+                                 showlegend=True,
+                                 name='Optimal location',
+                                 hoverinfo='skip'))
+        fig.update_layout(title={'text': 'Optimal location vs actual station', 'x': 0.5})
+        # Reordering the traces with the actual stations and the optimal locations to have the actual station in front
+        # Direct assignment is not possible, we need to first turn it into a list from a tuple (which is unchangeable)
+        traces = list(fig['data'])
+        optimal_location_trace = traces[-1]
+        traces[-1] = traces[-2]
+        traces[-2] = optimal_location_trace
+        fig['data'] = tuple(traces)
+        return fig
 
     @staticmethod
     def _create_legend_handles(colors: list[Union[str, tuple[float, float, float, float]]],
