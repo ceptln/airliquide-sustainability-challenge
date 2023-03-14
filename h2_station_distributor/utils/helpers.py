@@ -315,6 +315,26 @@ class Data:
         return (df_traffic[traffic_column] * df_traffic.intersection(area).length / 1000).sum()
 
     @staticmethod
+    def calculate_refuelings_per_day(h2_distance: Union[int, float], range_in_km: Union[int, float],
+                                      min_fuel_level: float = 0.2) -> Union[int, float]:
+        """This method calculated how many refuelings are necessary to cover h2_distance. range_in_km defines how far a
+        truck can drive on a full tank and min_fuel_level determines at what tank level a truck will be refueled."""
+        return h2_distance / ((1 - min_fuel_level) * range_in_km)
+
+    @staticmethod
+    def calculate_fuel_from_km(h2_distance_in_km: Union[int, float],
+                                h2_in_kg_per_km: Union[int, float] = 0.08) -> Union[int, float]:
+        """This method calculates how many kg of H2 are needed to cover h2_distance assuming an H2 consumption per km of
+        h2_per_km."""
+        return h2_distance_in_km * h2_in_kg_per_km
+
+    @staticmethod
+    def calculate_km_from_fuel(h2_fuel_in_kg: Union[int, float],
+                                h2_in_kg_per_km: Union[int, float] = 0.08) -> Union[int, float]:
+        """This method calculates how many km can be driven with h2_fuel_in_kg kilos of H2."""
+        return h2_fuel_in_kg / h2_in_kg_per_km
+
+    @staticmethod
     def translate_regions_regions_to_official_names(df_regions: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         """This method translates the region names from the regions DataFrame to names as they are found online and in
         the depreg DataFrame."""
@@ -572,7 +592,7 @@ class Strategies:
         station_size is in kg of H2 a station stores"""
         df_traffic = df_traffic.copy(deep=True)
         distance_to_cover = Data.calculate_h2_distance(n_trucks=n_h2_trucks)
-        distance_covered_by_station = cls._calculate_km_from_fuel(station_size)
+        distance_covered_by_station = Data.calculate_km_from_fuel(station_size)
         total_covered_distance = 0
         created_areas = 0
 
@@ -632,49 +652,6 @@ class Strategies:
                                                            point=area.centroid)
             df.loc[index, 'geometry'] = best_location
         return df
-
-    @classmethod
-    def calculate_cost_of_stations(cls, stations: dict[str, dict[str, int]]) -> int:
-        """This method calculates the total cost of the stations. stations is assumed to have 'small', 'medium' and/or
-        'large' as first key and as value a dictionary with 'n_stations' and 'duration' as key and the number of
-        stations and the years of operation as values respectively. E.g.:
-        {'small': {'n_stations': 2, 'duration': 10},
-        'medium': {'n_stations': 5, 'duration': 10}}
-        The output will be in euros."""
-        dict_for_inital_cost = {station_type: stations[station_type]['n_stations'] for station_type in stations}
-        initial_cost = cls._calculate_initial_cost_for_station_configuration(stations=dict_for_inital_cost)
-        ongoing_cost = cls._calculate_variable_cost_for_station_configuration(stations=stations)
-        return initial_cost + ongoing_cost
-
-    @classmethod
-    def calculate_profit_of_station_weight_based(cls, served_h2_in_kg: Union[int, float], station_type: str) -> float:
-        """This method calculates the profit a station of type station_type makes in a year. served_h2_in_kg is the
-        average amount of H2 the station served in a day, station_type can take the following values: 'small', 'medium'
-        or 'large'."""
-        revenues = served_h2_in_kg * cls.get_h2_price_per_kg()
-        cost = cls._get_annual_cost_for_station_type(station_type=station_type)
-        profit = revenues - cost
-        return profit
-
-    @classmethod
-    def calculate_profit_of_station_distance_based(cls, covered_distance_in_km: Union[int, float],
-                                                   station_type: str) -> float:
-        """This method calculates the profit a station of type station_type makes in a year. covered_distance_in_km is
-        the average daily distance in km covered by all the H2 trucks that are assumed to charge at this station,
-        station_type can take the following values: 'small', 'medium'
-        or 'large'."""
-        served_h2_in_kg = cls._calculate_fuel_from_km(covered_distance_in_km)
-        return cls.calculate_profit_of_station_weight_based(served_h2_in_kg=served_h2_in_kg, station_type=station_type)
-
-    @classmethod
-    def get_h2_price_per_kg(cls) -> float:
-        """This method returns the price of H2 per kg inferred from the information on the three different station
-        types."""
-        price_from_small_station = cls._infer_h2_price_form_station_info(0.9, 2000, 3_000_000, 15, 0.1)
-        price_from_medium_station = cls._infer_h2_price_form_station_info(0.8, 3000, 5_000_000, 15, 0.08)
-        price_from_large_station = cls._infer_h2_price_form_station_info(0.6, 4000, 8_000_000, 15, 0.07)
-        avg_price = (price_from_small_station + price_from_medium_station + price_from_large_station) / 3
-        return avg_price
 
     @staticmethod
     def _add_score_for_point(df_next_hub: gpd.GeoDataFrame, point: shapely.Point) -> gpd.GeoDataFrame:
@@ -747,25 +724,50 @@ class Strategies:
 
         return buffer, mask, covered_distance, area
 
-    @staticmethod
-    def _calculate_refuelings_per_day(h2_distance: Union[int, float], range_in_km: Union[int, float],
-                                      min_fuel_level: float = 0.2) -> Union[int, float]:
-        """This method calculated how many refuelings are necessary to cover h2_distance. range_in_km defines how far a
-        truck can drive on a full tank and min_fuel_level determines at what tank level a truck will be refueled."""
-        return h2_distance / ((1 - min_fuel_level) * range_in_km)
 
-    @staticmethod
-    def _calculate_fuel_from_km(h2_distance_in_km: Union[int, float],
-                                h2_in_kg_per_km: Union[int, float] = 0.08) -> Union[int, float]:
-        """This method calculates how many kg of H2 are needed to cover h2_distance assuming an H2 consumption per km of
-        h2_per_km."""
-        return h2_distance_in_km * h2_in_kg_per_km
+class Accounting:
+    @classmethod
+    def calculate_cost_of_station_configuration(cls, stations: dict[str, dict[str, int]]) -> int:
+        """This method calculates the total cost of the stations. stations is assumed to have 'small', 'medium' and/or
+        'large' as first key and as value a dictionary with 'n_stations' and 'duration' as key and the number of
+        stations and the years of operation as values respectively. E.g.:
+        {'small': {'n_stations': 2, 'duration': 10},
+        'medium': {'n_stations': 5, 'duration': 10}}
+        The output will be in euros."""
+        dict_for_inital_cost = {station_type: stations[station_type]['n_stations'] for station_type in stations}
+        initial_cost = cls._calculate_initial_cost_of_station_configuration(stations=dict_for_inital_cost)
+        ongoing_cost = cls._calculate_variable_cost_of_station_configuration(stations=stations)
+        return initial_cost + ongoing_cost
 
-    @staticmethod
-    def _calculate_km_from_fuel(h2_fuel_in_kg: Union[int, float],
-                                h2_in_kg_per_km: Union[int, float] = 0.08) -> Union[int, float]:
-        """This method calculates how many km can be driven with h2_fuel_in_kg kilos of H2."""
-        return h2_fuel_in_kg / h2_in_kg_per_km
+    @classmethod
+    def calculate_profit_of_station_weight_based(cls, served_h2_in_kg: Union[int, float], station_type: str) -> float:
+        """This method calculates the profit a station of type station_type makes in a year. served_h2_in_kg is the
+        average amount of H2 the station served in a day, station_type can take the following values: 'small', 'medium'
+        or 'large'."""
+        revenues = served_h2_in_kg * cls.get_h2_price_per_kg()
+        cost = cls._get_annual_cost_for_station_type(station_type=station_type)
+        profit = revenues - cost
+        return profit
+
+    @classmethod
+    def calculate_profit_of_station_distance_based(cls, covered_distance_in_km: Union[int, float],
+                                                   station_type: str) -> float:
+        """This method calculates the profit a station of type station_type makes in a year. covered_distance_in_km is
+        the average daily distance in km covered by all the H2 trucks that are assumed to charge at this station,
+        station_type can take the following values: 'small', 'medium'
+        or 'large'."""
+        served_h2_in_kg = Data.calculate_fuel_from_km(covered_distance_in_km)
+        return cls.calculate_profit_of_station_weight_based(served_h2_in_kg=served_h2_in_kg, station_type=station_type)
+
+    @classmethod
+    def get_h2_price_per_kg(cls) -> float:
+        """This method returns the price of H2 per kg inferred from the information on the three different station
+        types."""
+        price_from_small_station = cls._infer_h2_price_form_station_info(0.9, 2000, 3_000_000, 15, 0.1)
+        price_from_medium_station = cls._infer_h2_price_form_station_info(0.8, 3000, 5_000_000, 15, 0.08)
+        price_from_large_station = cls._infer_h2_price_form_station_info(0.6, 4000, 8_000_000, 15, 0.07)
+        avg_price = (price_from_small_station + price_from_medium_station + price_from_large_station) / 3
+        return avg_price
 
     @staticmethod
     def _calculate_h2_transportation_cost(h2_fuel_in_kg: Union[int, float], transport_distance_in_km: Union[int, float],
@@ -785,7 +787,7 @@ class Strategies:
         return annual_cost
 
     @staticmethod
-    def _calculate_initial_cost_for_station_configuration(stations: dict[str, int]) -> int:
+    def _calculate_initial_cost_of_station_configuration(stations: dict[str, int]) -> int:
         """This method calculates the cost of the initial investment of the configuration provided in stations.
         stations is assumed to have 'small', 'medium' and/or 'large' as key(s) and the number of stations of each type
         as value(s). E.g.:
@@ -796,7 +798,7 @@ class Strategies:
         return int(sum([cost_per_station[key] * stations[key] for key in stations]))
 
     @staticmethod
-    def _calculate_variable_cost_for_station_configuration(stations: dict[str, dict[str, int]]):
+    def _calculate_variable_cost_of_station_configuration(stations: dict[str, dict[str, int]]):
         """This method calculates the ongoing cost of the stations. stations is assumed to have
         'small', 'medium' and/or 'large' as first key and as value a dictionary with 'n_stations' and 'duration' as key
         and the number of stations and the years of operation as values respectively. E.g.:
