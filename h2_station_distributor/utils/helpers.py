@@ -642,9 +642,39 @@ class Strategies:
         'medium': {'n_stations': 5, 'duration': 10}}
         The output will be in euros."""
         dict_for_inital_cost = {station_type: stations[station_type]['n_stations'] for station_type in stations}
-        initial_cost = cls._calculate_initial_cost(stations=dict_for_inital_cost)
-        ongoing_cost = cls._calculate_variable_cost(stations=stations)
+        initial_cost = cls._calculate_initial_cost_for_station_configuration(stations=dict_for_inital_cost)
+        ongoing_cost = cls._calculate_variable_cost_for_station_configuration(stations=stations)
         return initial_cost + ongoing_cost
+
+    @classmethod
+    def calculate_profit_of_station_weight_based(cls, served_h2_in_kg: Union[int, float], station_type: str) -> float:
+        """This method calculates the profit a station of type station_type makes in a year. served_h2_in_kg is the
+        average amount of H2 the station served in a day, station_type can take the following values: 'small', 'medium'
+        or 'large'."""
+        revenues = served_h2_in_kg * cls.get_h2_price_per_kg()
+        cost = cls._get_annual_cost_for_station_type(station_type=station_type)
+        profit = revenues - cost
+        return profit
+
+    @classmethod
+    def calculate_profit_of_station_distance_based(cls, covered_distance_in_km: Union[int, float],
+                                                   station_type: str) -> float:
+        """This method calculates the profit a station of type station_type makes in a year. covered_distance_in_km is
+        the average daily distance in km covered by all the H2 trucks that are assumed to charge at this station,
+        station_type can take the following values: 'small', 'medium'
+        or 'large'."""
+        served_h2_in_kg = cls._calculate_fuel_from_km(covered_distance_in_km)
+        return cls.calculate_profit_of_station_weight_based(served_h2_in_kg=served_h2_in_kg, station_type=station_type)
+
+    @classmethod
+    def get_h2_price_per_kg(cls) -> float:
+        """This method returns the price of H2 per kg inferred from the information on the three different station
+        types."""
+        price_from_small_station = cls._infer_h2_price_form_station_info(0.9, 2000, 3_000_000, 15, 0.1)
+        price_from_medium_station = cls._infer_h2_price_form_station_info(0.8, 3000, 5_000_000, 15, 0.08)
+        price_from_large_station = cls._infer_h2_price_form_station_info(0.6, 4000, 8_000_000, 15, 0.07)
+        avg_price = (price_from_small_station + price_from_medium_station + price_from_large_station) / 3
+        return avg_price
 
     @staticmethod
     def _add_score_for_point(df_next_hub: gpd.GeoDataFrame, point: shapely.Point) -> gpd.GeoDataFrame:
@@ -725,8 +755,8 @@ class Strategies:
         return h2_distance / ((1 - min_fuel_level) * range_in_km)
 
     @staticmethod
-    def _calculate_fuel_need(h2_distance_in_km: Union[int, float],
-                             h2_in_kg_per_km: Union[int, float] = 0.08) -> Union[int, float]:
+    def _calculate_fuel_from_km(h2_distance_in_km: Union[int, float],
+                                h2_in_kg_per_km: Union[int, float] = 0.08) -> Union[int, float]:
         """This method calculates how many kg of H2 are needed to cover h2_distance assuming an H2 consumption per km of
         h2_per_km."""
         return h2_distance_in_km * h2_in_kg_per_km
@@ -743,7 +773,19 @@ class Strategies:
         return h2_fuel_in_kg * transport_distance_in_km * cost_per_kg_per_km
 
     @staticmethod
-    def _calculate_initial_cost(stations: dict[str, int]) -> int:
+    def _get_annual_cost_for_station_type(station_type: str) -> float:
+        """Tihs method returns the annual cost of a station of type station_type. station_type can only take one of the
+        following values: 'small', 'medium' or 'large'."""
+        capex = {'small': 3 * 10 ** 6, 'medium': 5 * 10 ** 6, 'large': 8 * 10 ** 6}
+        if station_type not in capex:
+            raise ValueError("Only 'small', 'medium' and 'large' are allowed as values for station_type.")
+        opex = {'small': 0.1 * capex['small'], 'medium': 8 / 100 * capex['medium'], 'large': 7 / 100 * capex['large']}
+        depreciation_horizon_in_years = 15
+        annual_cost = capex[station_type] / depreciation_horizon_in_years + opex[station_type]
+        return annual_cost
+
+    @staticmethod
+    def _calculate_initial_cost_for_station_configuration(stations: dict[str, int]) -> int:
         """This method calculates the cost of the initial investment of the configuration provided in stations.
         stations is assumed to have 'small', 'medium' and/or 'large' as key(s) and the number of stations of each type
         as value(s). E.g.:
@@ -754,7 +796,7 @@ class Strategies:
         return int(sum([cost_per_station[key] * stations[key] for key in stations]))
 
     @staticmethod
-    def _calculate_variable_cost(stations: dict[str, dict[str, int]]):
+    def _calculate_variable_cost_for_station_configuration(stations: dict[str, dict[str, int]]):
         """This method calculates the ongoing cost of the stations. stations is assumed to have
         'small', 'medium' and/or 'large' as first key and as value a dictionary with 'n_stations' and 'duration' as key
         and the number of stations and the years of operation as values respectively. E.g.:
@@ -772,6 +814,19 @@ class Strategies:
                 var_cost *= stations[type_key][key]
             total_cost += var_cost
         return int(total_cost)
+
+    @staticmethod
+    def _infer_h2_price_form_station_info(profitability_threshold: float, storage_capacity: int, capex: int,
+                                          years_to_depreciate: int, opex_as_fraction_of_capex) -> float:
+        """This method infers the price of a kg of H2 based on the information they provided on the stations.
+        The formula for the breakeven (= 0 profit) is:
+            breakeven = profitability_threshold * storage_capacity * 365 * x - capex / years_to_depreciate
+                        - opex_as_fraction_of_capex * capex
+            x is the price per kg of H2 we are looking for
+            x = (capex / years_to_depreciate + opex_as_fraction_of_capex * capex)
+                / (profitability_threshold * storage_capacity * 365)"""
+        return ((capex / years_to_depreciate + opex_as_fraction_of_capex * capex)
+                / (profitability_threshold * storage_capacity * 365))
 
 
 class Plots:
