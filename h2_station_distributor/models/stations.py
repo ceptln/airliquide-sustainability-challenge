@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 import math
 import scipy
-from utils.helpers import Data
+from ..utils.helpers import Data
 
 
 # with open(Data.find_file("config.yaml")) as f:
@@ -17,17 +17,20 @@ class Stations:
         self.df = None
         self.points = None
         self.shapefile = gpd.read_file(Data.find_file("TMJA2019.shp"))
-        self.dfad = gpd.read_file(Data.find_file("Aires_logistiques_denses.shp"))
+        self.dfad = gpd.read_file(
+            Data.find_file("Aires_logistiques_denses.shp"))
+        self.reqs_df = pd.read_csv(Data.find_file("reqs_df.csv"))
 
     def preprocess(self):
         df = self.shapefile
-        df.loc[:, "ratio_PL"] = df["ratio_PL"].apply(lambda x: x / 100 if x > 40 else x)
+        df.loc[:, "ratio_PL"] = df["ratio_PL"].apply(
+            lambda x: x / 100 if x > 40 else x)
         df = df[df["ratio_PL"] > 0.1]
         df["trucks"] = df["ratio_PL"] * df["TMJA"] / 100
         # trucks_PL * distance(km) * 8 KgH2/100km * % trucks H2
         df["H2"] = df["trucks"] * (df["longueur"] / 1000) * 8 / 100 * 1 / 60
-        df["prD"] = df["prD"] + "_" + df["route"]
-        df["prF"] = df["prF"] + "_" + df["route"]
+        df["prD"] = df["prD"] + df["route"] + df["depPrD"]
+        df["prF"] = df["prF"] + df["route"] + df["depPrF"]
         df = df[
             [
                 "depPrD",
@@ -49,9 +52,10 @@ class Stations:
         )
         return df
 
-    def get_points(self, departement):
+    def get_points(self, region):
         self.preprocess()
-        temp = self.df[self.df["depPrF"] == departement]
+        temp = self.df[self.df["depPrF"].isin(eval(
+            self.reqs_df[self.reqs_df.region == region].iloc[0, 5]))]
 
         points = []
         x = []
@@ -93,14 +97,16 @@ class Stations:
 
         md = np.max(points_dist["mindist"])
         points_dist["trucks_original"] = points_dist["trucks"]
-        points_dist["trucks"] = points_dist["trucks"] / np.max(points_dist["trucks"])
+        points_dist["trucks"] = points_dist["trucks"] / \
+            np.max(points_dist["trucks"])
         points_dist["mindist"] = points_dist["mindist"] / md
 
         # Here distance to aires is not that important
         points_dist["fitness"] = (
             1.5 * points_dist["trucks"] - 0.2 * points_dist["mindist"]
         )
-        points_dist["fitness"] = points_dist["fitness"].apply(lambda x: max(x, 0))
+        points_dist["fitness"] = points_dist["fitness"].apply(
+            lambda x: max(x, 0))
         return points_dist
 
     def prepare_and_fitness_medium(self, department, b):
@@ -109,11 +115,13 @@ class Stations:
 
         md = np.max(points_dist["mindist"])
         points_dist["trucks_original"] = points_dist["trucks"]
-        points_dist["trucks"] = points_dist["trucks"] / np.max(points_dist["trucks"])
+        points_dist["trucks"] = points_dist["trucks"] / \
+            np.max(points_dist["trucks"])
         points_dist["mindist"] = points_dist["mindist"] / md
 
         # Here trafic is less important, and distance more
-        points_dist["fitness"] = points_dist["trucks"] + 0.3 * points_dist["mindist"]
+        points_dist["fitness"] = points_dist["trucks"] + \
+            0.3 * points_dist["mindist"]
 
         # Also need to make sure you are far from big stations
         mind_others = []
@@ -129,7 +137,8 @@ class Stations:
         points_dist["fitness"] = points_dist["fitness"] + 1.5 * points_dist[
             "mind_others"
         ] / max(mind_others)
-        points_dist["fitness"] = points_dist["fitness"].apply(lambda x: max(x, 0))
+        points_dist["fitness"] = points_dist["fitness"].apply(
+            lambda x: max(x, 0))
 
         return points_dist.drop("mind_others", axis=1)
 
@@ -139,7 +148,8 @@ class Stations:
 
         md = np.max(points_dist["mindist"])
         points_dist["trucks_original"] = points_dist["trucks"]
-        points_dist["trucks"] = points_dist["trucks"] / np.max(points_dist["trucks"])
+        points_dist["trucks"] = points_dist["trucks"] / \
+            np.max(points_dist["trucks"])
         points_dist["mindist"] = points_dist["mindist"] / md
 
         # Here trafic is less important, and distance more
@@ -161,11 +171,13 @@ class Stations:
         points_dist["fitness"] = points_dist["fitness"] + 1.5 * points_dist[
             "mind_others"
         ] / max(mind_others)
-        points_dist["fitness"] = points_dist["fitness"].apply(lambda x: max(x, 0))
+        points_dist["fitness"] = points_dist["fitness"].apply(
+            lambda x: max(x, 0))
 
         return points_dist.drop("mind_others", axis=1)
 
-    def get_best_locations(self, df, nums, type):  # sourcery skip: avoid-builtin-shadow
+    # sourcery skip: avoid-builtin-shadow
+    def get_best_locations(self, df, nums, type):
 
         max = 0
         for i in range(df.shape[0]):
@@ -177,6 +189,7 @@ class Stations:
         print("got max")
 
         best = []
+        nums = min(df.shape[0],nums)
         iters = int(2 * scipy.special.binom(df.shape[0], nums))
         for i in range(iters):
             temp = df.sample(nums)
@@ -211,18 +224,21 @@ class Stations:
                 best[2]["trucks_original"] * 0.5 * 40 - 0.9 * 2000
             )
 
-        best[2]["profitable"] = best[2]["profitability"].apply(lambda x: int(x > 0))
+        best[2]["profitable"] = best[2]["profitability"].apply(
+            lambda x: int(x > 0))
         return best
 
-    def solution(self, department, nums_big, nums_medium, nums_small):
+    def solution(self, region, nums_big, nums_medium, nums_small):
         big = self.get_best_locations(
-            self.prepare_and_fitness_big(department), nums_big, "big"
+            self.prepare_and_fitness_big(region), nums_big, "big"
         )
         medium = self.get_best_locations(
-            self.prepare_and_fitness_medium(department, big[2]), nums_medium, "medium"
+            self.prepare_and_fitness_medium(
+                region, big[2]), nums_medium, "medium"
         )
         temp = pd.concat([big[2], medium[2]]).reset_index().iloc[:, 1:]
         small = self.get_best_locations(
-            self.prepare_and_fitness_small(department, temp), nums_small, "small"
+            self.prepare_and_fitness_small(
+                region, temp), nums_small, "small"
         )
         return pd.concat([big[2], medium[2], small[2]])
