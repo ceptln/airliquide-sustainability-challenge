@@ -1,10 +1,13 @@
 [tool.poetry]
-name = "airliquide-sustainability-challenge-1"
+name = "h2_station_distributor"
 version = "0.1.0"
-description = ""
-authors = ["youssefjouini <mohamed-youssef.jouini@hec.edu>"]
+description = "This package distributes H2 fueling stations and H2 production sites across France"
+authors = ["youssefjouini <mohamed-youssef.jouini@hec.edu>",
+           "Camille Epitalon-de Guidis",
+           "Clémence Daurat",
+           "Martin Groffilier"]
 readme = "README.md"
-packages = [{include = "airliquide_sustainability_challenge_1"}]
+packages = [{include = "h2_station_distributor"}]
 
 [tool.poetry.dependencies]
 python = ">=3.9,<3.9.7 || >3.9.7,<4.0"
