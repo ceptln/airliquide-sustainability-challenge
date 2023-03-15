@@ -21,7 +21,7 @@ class Stations:
 
     def preprocess(self):
         df = self.shapefile
-        df.loc[:, "ratio_PL"] = df["ratio_PL"].apply(lambda x: x / 100 if x > 40 else x)
+        df.loc[:, "ratio_PL"] = df["ratio_PL"].apply(lambda x: x / 10 if x > 40 else x)
         df = df[df["ratio_PL"] > 0.1]
         df["trucks"] = df["ratio_PL"] * df["TMJA"] / 100
         # trucks_PL * distance(km) * 8 KgH2/100km * % trucks H2

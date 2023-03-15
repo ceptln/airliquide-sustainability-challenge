@@ -4,6 +4,7 @@ import os
 import requests
 import time
 from typing import Union
+import warnings
 import zipfile
 
 import geopandas as gpd
@@ -12,6 +13,7 @@ from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 from selenium import webdriver
 from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.by import By
@@ -62,6 +64,26 @@ class LoadData:
         if drop_name:
             df = df.drop(columns=['dep_name'])
         return df
+
+    @staticmethod
+    def load_logistic_hubs(file_path: str = None) -> gpd.GeoDataFrame:
+        if file_path is None:
+            file_path = Data.find_file('Aires_logistiques_denses.shp')
+        return gpd.read_file(file_path)
+
+    @staticmethod
+    def load_water_bodies(file_path: str = None, simplify: bool = True) -> gpd.GeoDataFrame:
+        if file_path is None:
+            file_path = Data.find_file('water_bodies.shp')
+        df_water_bodies = gpd.read_file(file_path)
+        # The geometries are very precise which makes calculations with them very expensive, by simplifying them,
+        # calculations are sped up considerably
+        if simplify:
+            # A tolerance of 15 meters remains accurate: the area change on the smallest lake is only 5.2 %
+            # Increasing the tolerance is not recommended since it will create invalid geometries (which could be fixed
+            # with adding .buffer(0) to create valid ones again)
+            df_water_bodies = df_water_bodies.simplify(15)
+        return df_water_bodies
 
 
 class Data:
@@ -192,13 +214,14 @@ class Data:
 
     @staticmethod
     def add_buffer_distance(df_traffic: gpd.GeoDataFrame,
-                            buffer_size: Union[int, float] = 10000) -> gpd.GeoDataFrame:
+                            buffer_size: Union[int, float] = 10000,
+                            traffic_column: str = 'h2_truck_tmja') -> gpd.GeoDataFrame:
         """This method adds a column to df_traffic that contains how many km are covered by all trucks inside the
         buffer_distance around the centroid of a road section."""
         df_traffic = df_traffic.copy(deep=True)
         for index, area in df_traffic['geometry'].centroid.buffer(distance=buffer_size).items():
             df_traffic.loc[index, 'buffer_distance'] = (df_traffic.intersection(area).length / 1000
-                                                        * df_traffic['tmja']).sum()
+                                                        * df_traffic[traffic_column]).sum()
         return df_traffic
 
     @classmethod
@@ -225,6 +248,37 @@ class Data:
         # For 'h2_truck_tmja' we are simply applying the same percentage to the current traffic values. Of course it
         # would make sense to project 'truck_tmja' as well instead of using 'truck_tmja' unchanged but hey ...
         df_traffic['h2_truck_tmja'] = df_traffic['tmja'] * df_traffic['pctPL'] * h2_trucks_portion
+        return df_traffic
+
+    @staticmethod
+    def add_distance_to_nearest_logistic_hub(df_traffic: gpd.GeoDataFrame,
+                                             df_logistic_hubs: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        """This method calculates the distance in meters between each road section and its nearest logistic hub. The
+        distance is saved in new column called 'distance_to_next_hub'."""
+        df_traffic = df_traffic.copy(deep=True)
+        df_traffic['distance_to_next_hub'] = df_traffic.distance(df_logistic_hubs.unary_union)
+        # To get the distance to the center of a logistc hub (as previously), simply uncomment the following line
+        # df_traffic['distance_to_next_hub'] = df_traffic.distance(df_logistic_hubs.centroid.unary_union)
+        return df_traffic
+
+    @staticmethod
+    def add_distance_to_point(df_traffic: gpd.GeoDataFrame, point: shapely.Point) -> gpd.GeoDataFrame:
+        """This method calculates the distance between each road section and point. The distance is saved in a new
+        column called 'distance_to_point'."""
+        df_traffic = df_traffic.copy(deep=True)
+        df_traffic['distance_to_point'] = df_traffic.distance(point)
+        return df_traffic
+
+    @staticmethod
+    def add_distance_to_nearest_body_of_water(df_traffic: gpd.GeoDataFrame,
+                                              df_water_body: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        """This method adds a column called 'distance_to_water' to df_traffic, containing the distance of reach road
+        section to next body of water. This is a very expensive function: takes between 2 and 3 min to run."""
+        df_traffic = df_traffic.copy(deep=True)
+        # Initialize the column with a first distance measurement
+        df_traffic['distance_to_water'] = df_traffic.distance(df_water_body.unary_union)
+        # To get the distance to the center of a body of water (much faster), simply uncomment the following line
+        # df_traffic['distance_to_water'] = df_traffic.distance(df_water_body.centroid.unary_union)
         return df_traffic
 
     @staticmethod
@@ -272,12 +326,32 @@ class Data:
         return (df_traffic[traffic_column] * df_traffic['geometry'].length / 1000).sum()
 
     @staticmethod
-    def calculate_distance_covered_by_area(df_traffic: Union[gpd.GeoDataFrame],
+    def calculate_distance_covered_by_area(df_traffic: gpd.GeoDataFrame,
                                            area: shapely.Polygon,
                                            traffic_column: str = 'truck_tmja') -> Union[int, float]:
-        """This method calculates teh total distance covered by all trucks inside area in km. It is assumed that
+        """This method calculates the total distance covered by all trucks inside area in km. It is assumed that
         the records contain mutually exclusive road sections."""
         return (df_traffic[traffic_column] * df_traffic.intersection(area).length / 1000).sum()
+
+    @staticmethod
+    def calculate_refuelings_per_day(h2_distance: Union[int, float], range_in_km: Union[int, float],
+                                     min_fuel_level: float = 0.2) -> Union[int, float]:
+        """This method calculated how many refuelings are necessary to cover h2_distance. range_in_km defines how far a
+        truck can drive on a full tank and min_fuel_level determines at what tank level a truck will be refueled."""
+        return h2_distance / ((1 - min_fuel_level) * range_in_km)
+
+    @staticmethod
+    def calculate_fuel_from_km(h2_distance_in_km: Union[int, float],
+                               h2_in_kg_per_km: Union[int, float] = 0.08) -> Union[int, float]:
+        """This method calculates how many kg of H2 are needed to cover h2_distance assuming an H2 consumption per km of
+        h2_per_km."""
+        return h2_distance_in_km * h2_in_kg_per_km
+
+    @staticmethod
+    def calculate_km_from_fuel(h2_in_kg: Union[int, float],
+                               h2_in_kg_per_km: Union[int, float] = 0.08) -> Union[int, float]:
+        """This method calculates how many km can be driven with h2_in_kg kilos of H2."""
+        return h2_in_kg / h2_in_kg_per_km
 
     @staticmethod
     def translate_regions_regions_to_official_names(df_regions: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -352,8 +426,44 @@ class Data:
         df_regions = df_regions.copy(deep=True)
 
         main_land = df_regions[df_regions['nomnewregi'] != 'Corse']
-        mask = df.loc[:, 'geometry'].apply(lambda x: any(main_land.contains(x)))
+        mask = df.intersects(main_land.unary_union)
         return df[mask]
+
+    @staticmethod
+    def get_nearest_point_on_road(df_traffic: gpd.GeoDataFrame, point: shapely.Point) -> shapely.Point:
+        """This method returns the location on a road that is closest to point."""
+        closest_road_index = df_traffic.distance(point).argmin()
+        closest_road = df_traffic['geometry'].iloc[closest_road_index]
+        point_on_road = closest_road.interpolate(closest_road.project(point))
+        return point_on_road
+
+    @classmethod
+    def get_daily_production_of_h2_in_kg(cls, plant_type: str) -> float:
+        """This method returns the daily output of an H2 production plant of type plant_type in kg.
+        plant_type can only be 'small' or 'large'."""
+        production_plants_hourly_energy_usage = {'small': 5000, 'large': 10 ** 5}
+        production_plant_kw_per_kg_of_h2 = {'small': 55, 'large': 50}
+        kg_per_hour = cls._convert_kw_to_kg_of_h2(energy=production_plants_hourly_energy_usage[plant_type],
+                                                  kw_per_kg_of_h2=production_plant_kw_per_kg_of_h2[plant_type])
+        return kg_per_hour * 24
+
+    @staticmethod
+    def change_traffic_to_target_year(df_traffic: gpd.GeoDataFrame, data_year: int = 2018,
+                                      target_year: int = 2030) -> gpd.GeoDataFrame:
+        """This method changes the column 'tmja' in df_traffic to values of 2030. Concretely, we are assuming an annual
+        truck traffic growth rate of 1.4 %."""
+        # The annual truck traffic growth rate is predicted to be 1.4% (Source: https://www.ecologie.gouv.fr/sites/
+        # default/files/Th%C3%A9ma%20-%20Projections%20de%20la%20demande%20de%20transport%20sur%20le%20long%20terme.pdf)
+        df_traffic = df_traffic.copy(deep=True)
+        truck_traffic_growth_rate = 0.014
+        truck_traffic_multiplier = (1 + truck_traffic_growth_rate) ** (target_year - data_year)
+        df_traffic['tmja'] = df_traffic['tmja'] * truck_traffic_multiplier
+        return df_traffic
+
+    @staticmethod
+    def _convert_kw_to_kg_of_h2(energy: int, kw_per_kg_of_h2: int) -> float:
+        """This method converts KW of energy to the equivalent in kg of H2."""
+        return energy / kw_per_kg_of_h2
 
     @staticmethod
     def _check_exclusivity_of_road_sections(df_traffic: gpd.GeoDataFrame, threshold: Union[int, float] = 1,
@@ -375,6 +485,27 @@ class Data:
             starting_dir += './.'
             cls._find_root(starting_dir=starting_dir)
         return starting_dir
+
+    @classmethod
+    def _create_cleaned_water_bodies_file_from_original_file(cls, df_water_bodies: gpd.GeoDataFrame,
+                                                             df_regions: gpd.GeoDataFrame,
+                                                             save: bool = True) -> gpd.GeoDataFrame:
+        """This method can be used to create the """
+        # Limiting the data to France and only the relevant columns
+        relevant_columns = ['nameTxtInt', 'nameText', 'spZoneType', 'geometry']
+        df_water_bodies = df_water_bodies.loc[df_water_bodies['country'] == 'FR', relevant_columns]
+        # Converting it to the correct coordinate reference system (crs)
+        df_water_bodies = df_water_bodies.to_crs(df_regions.crs)
+        # Limiting the data to mainland France
+        df_water_bodies = cls.limit_gdfs_to_main_land_france(df=df_water_bodies, df_regions=df_regions)
+        df_water_bodies = df_water_bodies.reset_index(drop=True)
+        if save:
+            data_folder = cls.find_folder('raw')
+            target_folder = f'{data_folder}/water_bodies'
+            if not os.path.exists(target_folder):
+                os.mkdir(target_folder)
+            df_water_bodies.to_file(f'{target_folder}/water_bodies.shp')
+        return df_water_bodies
 
 
 class DownloadData:
@@ -478,16 +609,21 @@ class DownloadData:
             raise ValueError('The stations.csv file could not be downloaded')
 
     @classmethod
-    def download_depreg(cls):
+    def download_depreg(cls) -> None:
         csv_url = 'https://www.data.gouv.fr/fr/datasets/r/987227fb-dcb2-429e-96af-8979f97c9c84'
         cls.download_csv_file(url=csv_url, target_file='depreg.csv')
+
+    @classmethod
+    def download_water_bodies(cls) -> None:
+        zip_url = 'https://www.eea.europa.eu/data-and-maps/data/wise-wfd-spatial/surface-water-body/shapefile-2016'
+        cls.download_zip_file(url=zip_url, target_folder='airesPL')
 
 
 class Strategies:
     @classmethod
     def split_into_n_areas(cls, df_traffic: gpd.GeoDataFrame, n_areas: int, rank_column: str = 'buffer_distance',
-                           buffer_step: Union[int, float] = 10000) -> tuple[gpd.GeoDataFrame,
-                                                                            dict[str, shapely.Polygon]]:
+                           initial_buffer: Union[int, float] = 5000,
+                           buffer_step: Union[int, float] = 5000) -> gpd.GeoDataFrame:
         """This method creates n_areas areas that each contain at least 1 / n_areas * total distance covered by trucks
         in all of France. The output DataFrame will have n_areas new columns, each telling which records belong to
         an area. One record can belong to multiple areas.
@@ -495,70 +631,112 @@ class Strategies:
         sections close to the border are affected by this.
         It is assumed that the geometry in df_traffic is stored in a column called 'geometry'."""
         df_traffic = df_traffic.copy(deep=True)
+        # We will later need the DataFrame in sorted order over and over again
+        df_traffic = df_traffic.sort_values(by=rank_column, ascending=False)
+        # Calculate how much distance is to cover by all the stations (=areas)
         total_distance = Data.calculate_total_distance_covered(df_traffic, traffic_column='h2_truck_tmja')
+        # Calculate how much distance is to cover by one station (=area)
         distance_per_area = total_distance / n_areas
+        # Initialize variable to keep track of the number of created areas
         created_areas = 0
+        # Initialize variable to keep track of the smallest buffer which will determine the distance from the covered
+        # areas
+        min_buffer = 10 ** 6
+        # Define the starting point for the first area
         reference = df_traffic[rank_column].argmax()
+        # Initialize shape to keep track of all the covered areas
+        covered_area = df_traffic.loc[reference, 'geometry'].centroid.buffer(1)
+        # Define a mask that will make sure that we exclude areas we have already covered
         mask = pd.Series(index=df_traffic.index)
         mask.loc[:] = False
-        mask = mask.astype(bool)
-        areas = dict()
+        # Create a variable to which we will add all created areas
+        df_areas = gpd.GeoDataFrame(columns=['priority', 'geometry'], geometry='geometry', crs='EPSG:2154')
+        # Create areas until we have reached the desired number
         while created_areas < n_areas:
-            _, used_records_mask, _, area = cls._size_buffer_for_distance(df_traffic=df_traffic,
-                                                                          index=reference,
-                                                                          target_distance=distance_per_area,
-                                                                          initial_buffer=10000,
-                                                                          buffer_step=buffer_step,
-                                                                          step_direction='up')
-            areas[reference] = area
-            mask += used_records_mask
-            reference = df_traffic.loc[~mask, rank_column].sort_values(ascending=False).index[0]
+            # Size the area to cover distance_per_area
+            buffer, used_records_mask, _, area = cls._size_buffer_for_distance(df_traffic=df_traffic,
+                                                                               index=reference,
+                                                                               target_distance=distance_per_area,
+                                                                               initial_buffer=initial_buffer,
+                                                                               buffer_step=buffer_step,
+                                                                               step_direction='up')
+            # Fill the DataFrame with the results
+            df_areas.loc[created_areas, 'geometry'] = area
+            df_areas.loc[created_areas, 'priority'] = created_areas + 1
+            # Create a shape of all covered areas
+            covered_area = covered_area.union(area)
+            # Alter the geometry of the reference road section to only include parts that have not been covered yet. It
+            # is important to note that the removed parts are also not considered in the sizing of a different point
+            df_traffic.loc[reference, 'geometry'] = df_traffic.loc[reference, 'geometry'].difference(covered_area)
+            # Create a mask to only use road parts that aren't in covered_area as starting point
+            if buffer < min_buffer:
+                min_buffer = buffer
+            mask = df_traffic.difference(covered_area.buffer(min_buffer)).length > 0
+            # Create a new starting point
+            reference = df_traffic.loc[mask, rank_column].index[0]
             created_areas += 1
-            df_traffic.loc[used_records_mask, f'area_{created_areas}'] = True
-            df_traffic.loc[~used_records_mask, f'area_{created_areas}'] = False
-        df_traffic['no_area'] = ~mask
-        return df_traffic, areas
+            # Inform on the progress
+            if created_areas % 50 == 0:
+                print(f'Created areas: {created_areas}, '
+                      f'open records: {mask.sum()}, '
+                      f'centroid: {area.centroid}, '
+                      f'last buffer size: {buffer}, '
+                      f'min buffer size: {min_buffer}')
+        return df_areas
 
     @classmethod
-    def split_into_areas_station_based(cls, df_traffic: gpd.GeoDataFrame, station_size: Union[int, float],
-                                       n_h2_trucks: int, rank_column: str = 'buffer_distance',
-                                       buffer_step: Union[int, float] = 10000) -> tuple[gpd.GeoDataFrame,
-                                                                                        dict[str, shapely.Polygon]]:
+    def split_into_areas_fuel_based(cls, df_traffic: gpd.GeoDataFrame, h2_in_kg: Union[int, float],
+                                    rank_column: str = 'buffer_distance',
+                                    buffer_step: Union[int, float] = 10000) -> gpd.GeoDataFrame:
         """This method creates areas based on the provided station size (in kg of H2 they can refuel) and the number of
-        H2 trucks on the road."""
+        H2 trucks on the road. It is important to note that it is assumed that the provided df_traffic has the traffic
+        number from 2030, since the distance_to_cover we are calculating is based on the number of trucks in 2030 as
+        well as the range of trucks in 2030.
+        station_size is in kg of H2 a station stores"""
         df_traffic = df_traffic.copy(deep=True)
-        distance_to_cover = Data.calculate_h2_distance(n_trucks=n_h2_trucks)
-        distance_covered_by_station = cls._calculate_km_from_fuel(station_size)
+        # Calculate the total distance to cover
+        distance_to_cover = Data.calculate_total_distance_covered(df_traffic, traffic_column='h2_truck_tmja')
+        # Calculate how much distance one station covers
+        distance_covered_by_fuel = Data.calculate_km_from_fuel(h2_in_kg)
+        # Initialize variables to keep track of the distance covered by all created areas (=stations)
         total_covered_distance = 0
         created_areas = 0
-
+        # Define a starting point
         reference = df_traffic[rank_column].argmax()
         mask = pd.Series(index=df_traffic.index)
         mask.loc[:] = False
         mask = mask.astype(bool)
-        areas = dict()
+        # Create a DataFrame to store the created geometries in
+        df_areas = gpd.GeoDataFrame(columns=['priority', 'geometry'], geometry='geometry', crs='EPSG:2154')
+        # Create new stations until they all together cover distance_to_cover
         while total_covered_distance < distance_to_cover:
+            # Get the buffer size that will cover a bit more than the distance a station can cover
             buffer_size, _, _, _ = cls._size_buffer_for_distance(df_traffic=df_traffic,
                                                                  index=reference,
-                                                                 target_distance=distance_covered_by_station,
+                                                                 target_distance=distance_covered_by_fuel,
                                                                  buffer_step=buffer_step)
+            # Reduce that buffer until a station can cover it
             _, used_records_mask, covered_distance, area = \
                 cls._size_buffer_for_distance(df_traffic=df_traffic,
                                               index=reference,
-                                              target_distance=distance_covered_by_station,
+                                              target_distance=distance_covered_by_fuel,
                                               initial_buffer=buffer_size,
                                               buffer_step=1000,
                                               step_direction='down')
             total_covered_distance += covered_distance
-            areas[reference] = area
+            # Fill the DataFrame with the results
+            df_areas.loc[created_areas, 'geometry'] = area
+            df_areas.loc[created_areas, 'priority'] = created_areas + 1
+            # We update the mask such that a road section can have at most one station
             mask += used_records_mask
+            # Get a new starting point
             reference = df_traffic.loc[~mask, rank_column].sort_values(ascending=False).index[0]
             created_areas += 1
-            df_traffic.loc[used_records_mask, f'area_{created_areas}'] = True
-            df_traffic.loc[~used_records_mask, f'area_{created_areas}'] = False
-        df_traffic['no_area'] = ~mask
-        print(f'Created {created_areas + 1} areas.')
-        return df_traffic, areas
+            # Inform on the progress
+            if created_areas % 50 == 0:
+                print(f'Created areas: {created_areas}, '
+                      f'open records: {(~mask).sum()}')
+        return df_areas
 
     @staticmethod
     def find_closest_station_in_area(area: shapely.Polygon, df_stations: gpd.GeoDataFrame) -> tuple[str, shapely.Point]:
@@ -569,27 +747,89 @@ class Strategies:
         return closest_station, closest_station_location
 
     @classmethod
-    def create_h2_station_distribution_from_areas(cls, areas: dict[str, shapely.Polygon],
-                                                  df_stations: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    def create_h2_station_distribution_from_areas(cls, df_areas: gpd.GeoDataFrame,
+                                                  df_with_hub_distance: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
         """This method creates a GeoDataFrame with the location of the suggested station for each area."""
-        df = gpd.GeoDataFrame(columns=['road_section', 'station', 'geometry'], geometry='geometry', crs='EPSG:2154')
-        for index, (road_section, area) in enumerate(areas.items()):
-            df.loc[index, 'road_section'] = road_section
-            df.loc[index, ['station', 'geometry']] = cls.find_closest_station_in_area(area, df_stations)
+        df = gpd.GeoDataFrame(columns=['priority', 'geometry'], geometry='geometry', crs='EPSG:2154')
+        # We loop over all areas to find the best location for a station
+        for index, (area_index, area) in enumerate(df_areas['geometry'].items()):
+            # We only consider road sections that are within that area
+            mask = df_with_hub_distance.intersects(area)
+            df_temp = df_with_hub_distance[mask].copy(deep=True)
+            df_temp['geometry'] = df_temp.intersection(area)
+            # We calculate the score for each road section inside area
+            scores = cls._add_station_score_for_point(df_temp, area.centroid)
+            # Extract the best road section
+            best_score_index = scores['score'].sort_values().index[0]
+            # Get the closest point to the optimal location on that road section
+            best_location = Data.get_nearest_point_on_road(df_traffic=df_temp.loc[[best_score_index], :],
+                                                           point=area.centroid)
+            df.loc[index, 'geometry'] = best_location
+            df.loc[index, 'priority'] = df_areas.loc[area_index, 'priority']
         return df
 
     @classmethod
-    def calculate_cost_of_stations(cls, stations: dict[str, dict[str, int]]) -> int:
-        """This method calculates the total cost of the stations. stations is assumed to have 'small', 'medium' and/or
-        'large' as first key and as value a dictionary with 'n_stations' and 'duration' as key and the number of
-        stations and the years of operation as values respectively. E.g.:
-        {'small': {'n_stations': 2, 'duration': 10},
-        'medium': {'n_stations': 5, 'duration': 10}}
-        The output will be in euros."""
-        dict_for_inital_cost = {station_type: stations[station_type]['n_stations'] for station_type in stations}
-        initial_cost = cls._calculate_initial_cost(stations=dict_for_inital_cost)
-        ongoing_cost = cls._calculate_variable_cost(stations=stations)
-        return initial_cost + ongoing_cost
+    def create_h2_plant_distribution_from_areas(cls, df_areas: gpd.GeoDataFrame,
+                                                df_hubs_water: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        """This method creates a GeoDataFrame with the location of the suggested plant for each area."""
+        df = gpd.GeoDataFrame(columns=['priority', 'geometry'], geometry='geometry', crs='EPSG:2154')
+        # We loop over all areas to find the best location for a station
+        for index, (area_index, area) in enumerate(df_areas['geometry'].items()):
+            # We only consider road sections that are within that area
+            mask = df_hubs_water.intersects(area)
+            df_temp = df_hubs_water[mask].copy(deep=True)
+            df_temp['geometry'] = df_temp.intersection(area)
+            # We calculate the score for each road section inside area
+            scores = cls._add_plant_score_for_point(df_temp, area.centroid)
+            # Extract the best road section
+            best_score_index = scores['score'].sort_values().index[0]
+            # Get the closest point to the optimal location on that road section
+            best_location = Data.get_nearest_point_on_road(df_traffic=df_temp.loc[[best_score_index], :],
+                                                           point=area.centroid)
+            df.loc[index, 'geometry'] = best_location
+            df.loc[index, 'priority'] = df_areas.loc[area_index, 'priority']
+        return df
+
+    @staticmethod
+    def _add_station_score_for_point(df_next_hub: gpd.GeoDataFrame, point: shapely.Point) -> gpd.GeoDataFrame:
+        """This method adds a column with the score of each road section, that will then define where a station is
+        going to be built. The score is a weighted sum between the distance of a road section to the nearest hub, the
+        distance of a road section to point and the negative of the H2 truck traffic on a road section.
+        It is assumed that df_next_hub contains a column with the predicted traffic of H2 trucks called 'h2_truck_tmja'
+        and a column with the distance to the nearest logistic hub called 'distance_to_next_hub' (which can be created
+        with Data.add_distance_to_nearest_logistic_hub(df_traffic, df_logistic_hubs).
+        A lower score is BETTER!"""
+        # Creating the columns for the distance to the point
+        df_next_hub = Data.add_distance_to_point(df_next_hub, point)
+        # To give all features the same weight, we normalize the values
+        score_columns = ['distance_to_next_hub', 'distance_to_point', 'h2_truck_tmja']
+        df_next_hub[score_columns] = df_next_hub[score_columns] / df_next_hub[score_columns].sum()
+        w1, w2, w3 = 1 / 3, 1 / 3, 1 / 3
+        # Finally we calculate the score as the weighted sum of the three features
+        df_next_hub['score'] = (w1 * df_next_hub[score_columns[0]]
+                                + w2 * df_next_hub[score_columns[1]]
+                                - w3 * df_next_hub[score_columns[2]])
+        return df_next_hub
+
+    @staticmethod
+    def _add_plant_score_for_point(df_hubs_water: gpd.GeoDataFrame, point: shapely.Point) -> gpd.GeoDataFrame:
+        """This method adds a column with the score of each road section, that will then define where a plant is
+        going to be built. The score is a weighted sum between the distance of a road section to the nearest body of
+        water, the distance of a road section to point and the negative of the H2 truck traffic on a road section.
+        It is assumed that df_hubs_water contains a column with the predicted traffic of H2 trucks called 'h2_truck_tmja'
+        and a column with the distance to the nearest logistic hub called 'distance_to_water'.
+        A lower score is BETTER"""
+        # Creating the columns for the distance to the point
+        df_hubs_water = Data.add_distance_to_point(df_hubs_water, point)
+        # To give all features the same weight, we normalize the values
+        score_columns = ['distance_to_water', 'distance_to_point', 'h2_truck_tmja']
+        df_hubs_water[score_columns] = df_hubs_water[score_columns] / df_hubs_water[score_columns].sum()
+        w1, w2, w3 = 1 / 3, 1 / 3, 1 / 3
+        # Finally we calculate the score as the weighted sum of the three features
+        df_hubs_water['score'] = (w1 * df_hubs_water[score_columns[0]]
+                                  + w2 * df_hubs_water[score_columns[1]]
+                                  - w3 * df_hubs_water[score_columns[2]])
+        return df_hubs_water
 
     @staticmethod
     def _size_buffer_for_distance(df_traffic: gpd.GeoDataFrame,
@@ -623,8 +863,7 @@ class Strategies:
         buffer = initial_buffer
         area = df_traffic.loc[index, 'geometry'].centroid.buffer(buffer)
         mask = df_traffic.intersects(area)
-        # covered_distance = Data.calculate_total_distance_covered(df_traffic.loc[mask, :],
-        #                                                          traffic_column='h2_truck_tmja')
+
         covered_distance = Data.calculate_distance_covered_by_area(df_traffic.loc[mask, :],
                                                                    area=area,
                                                                    traffic_column='h2_truck_tmja')
@@ -636,41 +875,95 @@ class Strategies:
                 buffer -= buffer_step
             area = df_traffic.loc[index, 'geometry'].centroid.buffer(buffer)
             mask = df_traffic.intersects(area)
-            # covered_distance = Data.calculate_total_distance_covered(df_traffic.loc[mask, :],
-            #                                                          traffic_column='h2_truck_tmja')
+
             covered_distance = Data.calculate_distance_covered_by_area(df_traffic.loc[mask, :],
                                                                        area=area,
                                                                        traffic_column='h2_truck_tmja')
 
         return buffer, mask, covered_distance, area
 
-    @staticmethod
-    def _calculate_refuelings_per_day(h2_distance: Union[int, float], range_in_km: Union[int, float],
-                                      min_fuel_level: float = 0.2) -> Union[int, float]:
-        """This method calculated how many refuelings are necessary to cover h2_distance. range_in_km defines how far a
-        truck can drive on a full tank and min_fuel_level determines at what tank level a truck will be refueled."""
-        return h2_distance / ((1 - min_fuel_level) * range_in_km)
+
+class Accounting:
+    @classmethod
+    def calculate_cost_of_station_configuration(cls, stations: dict[str, dict[str, int]]) -> int:
+        """This method calculates the total cost of the stations. stations is assumed to have 'small', 'medium' and/or
+        'large' as first key and as value a dictionary with 'n_stations' and 'duration' as key and the number of
+        stations and the years of operation as values respectively. E.g.:
+        {'small': {'n_stations': 2, 'duration': 10},
+        'medium': {'n_stations': 5, 'duration': 10}}
+        The output will be in euros."""
+        dict_for_inital_cost = {station_type: stations[station_type]['n_stations'] for station_type in stations}
+        initial_cost = cls._calculate_initial_cost_of_station_configuration(stations=dict_for_inital_cost)
+        ongoing_cost = cls._calculate_variable_cost_of_station_configuration(stations=stations)
+        return initial_cost + ongoing_cost
+
+    @classmethod
+    def calculate_profit_of_station_fuel_based(cls, h2_in_kg: Union[int, float], station_type: str) -> float:
+        """This method calculates the profit a station of type station_type makes in a year. h2_in_kg is the average
+        amount of H2 the station served in a day, station_type can take the following values: 'small', 'medium' or
+        'large'."""
+        revenues = h2_in_kg * cls.get_avg_h2_margin_per_kg_over_all_station_types()
+        cost = cls._get_annual_cost_for_station_type(station_type=station_type)
+        profit = revenues - cost
+        return profit
+
+    @classmethod
+    def calculate_profit_of_station_distance_based(cls, covered_distance_in_km: Union[int, float],
+                                                   station_type: str) -> float:
+        """This method calculates the profit a station of type station_type makes in a year. covered_distance_in_km is
+        the average daily distance in km covered by all the H2 trucks that are assumed to charge at this station,
+        station_type can take the following values: 'small', 'medium'
+        or 'large'."""
+        served_h2_in_kg = Data.calculate_fuel_from_km(covered_distance_in_km)
+        return cls.calculate_profit_of_station_fuel_based(h2_in_kg=served_h2_in_kg, station_type=station_type)
+
+    @classmethod
+    def calculate_transportation_cost_to_stations(cls, df_stations: gpd.GeoDataFrame,
+                                                  plant_location: shapely.Point, h2_in_kg: Union[int, float]) -> float:
+        """This method returns the total tansportation cost to all stations in df_stations, each station gets the same
+        amount of H2."""
+        distance_in_km = df_stations.difference(plant_location) / 1000
+        cost_per_kg_per_km = 0.008
+        return (distance_in_km * h2_in_kg * cost_per_kg_per_km).sum()
+
+    @classmethod
+    def get_avg_h2_margin_per_kg_over_all_station_types(cls) -> float:
+        """This method returns the margin of H2 per kg inferred from the information on the three different station
+        types."""
+        margin_from_small_station = cls._get_h2_margin_from_station_type('small')
+        margin_from_medium_station = cls._get_h2_margin_from_station_type('medium')
+        margin_from_large_station = cls._get_h2_margin_from_station_type('large')
+        avg_margin = (margin_from_small_station + margin_from_medium_station + margin_from_large_station) / 3
+        return avg_margin
+
+    @classmethod
+    def get_production_cost_per_kg_for_plant_type(cls, plant_type: str) -> float:
+        """This method calculates the price to produce one kg of H2 in euros for a production plant of type plant_type.
+        """
+        annual_cost = cls._get_annual_cost_for_production_plant_type(plant_type=plant_type)
+        daily_production_in_kg = Data.get_daily_production_of_h2_in_kg(plant_type=plant_type)
+        cost_per_kg = annual_cost / (daily_production_in_kg * 365)
+        return cost_per_kg
 
     @staticmethod
-    def _calculate_fuel_need(h2_distance_in_km: Union[int, float],
-                             h2_in_kg_per_km: Union[int, float] = 0.08) -> Union[int, float]:
-        """This method calculates how many kg of H2 are needed to cover h2_distance assuming an H2 consumption per km of
-        h2_per_km."""
-        return h2_distance_in_km * h2_in_kg_per_km
-
-    @staticmethod
-    def _calculate_km_from_fuel(h2_fuel_in_kg: Union[int, float],
-                                h2_in_kg_per_km: Union[int, float] = 0.08) -> Union[int, float]:
-        """This method calculates how many km can be driven with h2_fuel_in_kg kilos of H2."""
-        return h2_fuel_in_kg / h2_in_kg_per_km
-
-    @staticmethod
-    def _calculate_h2_transportation_cost(h2_fuel_in_kg: Union[int, float], transport_distance_in_km: Union[int, float],
+    def _calculate_h2_transportation_cost(h2_in_kg: Union[int, float], transport_distance_in_km: Union[int, float],
                                           cost_per_kg_per_km: float = 0.008) -> float:
-        return h2_fuel_in_kg * transport_distance_in_km * cost_per_kg_per_km
+        return h2_in_kg * transport_distance_in_km * cost_per_kg_per_km
 
     @staticmethod
-    def _calculate_initial_cost(stations: dict[str, int]) -> int:
+    def _get_annual_cost_for_station_type(station_type: str) -> float:
+        """Tihs method returns the annual cost of a station of type station_type. station_type can only take one of the
+        following values: 'small', 'medium' or 'large'."""
+        capex = {'small': 3 * 10 ** 6, 'medium': 5 * 10 ** 6, 'large': 8 * 10 ** 6}
+        if station_type not in capex:
+            raise ValueError("Only 'small', 'medium' and 'large' are allowed as values for station_type.")
+        opex = {'small': 0.1 * capex['small'], 'medium': 8 / 100 * capex['medium'], 'large': 7 / 100 * capex['large']}
+        depreciation_horizon_in_years = 15
+        annual_cost = capex[station_type] / depreciation_horizon_in_years + opex[station_type]
+        return annual_cost
+
+    @staticmethod
+    def _calculate_initial_cost_of_station_configuration(stations: dict[str, int]) -> int:
         """This method calculates the cost of the initial investment of the configuration provided in stations.
         stations is assumed to have 'small', 'medium' and/or 'large' as key(s) and the number of stations of each type
         as value(s). E.g.:
@@ -681,7 +974,7 @@ class Strategies:
         return int(sum([cost_per_station[key] * stations[key] for key in stations]))
 
     @staticmethod
-    def _calculate_variable_cost(stations: dict[str, dict[str, int]]):
+    def _calculate_variable_cost_of_station_configuration(stations: dict[str, dict[str, int]]):
         """This method calculates the ongoing cost of the stations. stations is assumed to have
         'small', 'medium' and/or 'large' as first key and as value a dictionary with 'n_stations' and 'duration' as key
         and the number of stations and the years of operation as values respectively. E.g.:
@@ -700,19 +993,55 @@ class Strategies:
             total_cost += var_cost
         return int(total_cost)
 
+    @classmethod
+    def _get_h2_margin_from_station_type(cls, station_type: str) -> float:
+        station_info = {'small': cls._infer_h2_margin_form_station_info(0.9, 2000, 3_000_000, 15, 0.1),
+                        'medium': cls._infer_h2_margin_form_station_info(0.8, 3000, 5_000_000, 15, 0.08),
+                        'large': cls._infer_h2_margin_form_station_info(0.6, 4000, 8_000_000, 15, 0.07)}
+        if station_type not in station_info:
+            raise ValueError("Only 'small', 'medium' and 'large' are allowed as values for station_type.")
+        return station_info[station_type]
+
+    @staticmethod
+    def _infer_h2_margin_form_station_info(profitability_threshold: float, storage_capacity: int, capex: int,
+                                           years_to_depreciate: int, opex_as_fraction_of_capex) -> float:
+        """This method infers the margin of a kg of H2 based on the information they provided on the stations.
+        The formula for the breakeven (= 0 profit) is:
+            breakeven = profitability_threshold * storage_capacity * 365 * x - capex / years_to_depreciate
+                        - opex_as_fraction_of_capex * capex
+            x is the margin per kg of H2 we are looking for
+            x = (capex / years_to_depreciate + opex_as_fraction_of_capex * capex)
+                / (profitability_threshold * storage_capacity * 365)
+        It is important to note, that we are making the assumption here, that the cost includes the margin a station has
+        to pay for the H2."""
+        return ((capex / years_to_depreciate + opex_as_fraction_of_capex * capex)
+                / (profitability_threshold * storage_capacity * 365))
+
+    @staticmethod
+    def _get_annual_cost_for_production_plant_type(plant_type: str) -> float:
+        """Tihs method returns the annual cost of a production plant of type plant_type. plant_type can only take one of
+        the two values: 'small' or 'large'."""
+        capex = {'small': 2 * 10 ** 7, 'large': 1.2 * 10 ** 8}
+        if plant_type not in capex:
+            raise ValueError("Only 'small' and 'large' are allowed as values for plant_type.")
+        opex = {'small': 0.03 * capex['small'], 'large': 0.03 * capex['large']}
+        depreciation_horizon_in_years = 15
+        annual_cost = capex[plant_type] / depreciation_horizon_in_years + opex[plant_type]
+        return annual_cost
+
 
 class Plots:
     @staticmethod
-    def plot_roads_over_regions(df_traffic: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame) -> None:
+    def plot_roads_over_regions(df_traffic: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame) -> plt.Figure:
         """This method plots the road network over a map of France."""
         fig, ax = plt.subplots()
         df_regions.plot(ax=ax)
         df_traffic.plot(ax=ax, color='red')
         ax.set_title('Road network of France')
-        plt.show()
+        return fig
 
     @staticmethod
-    def plot_traffic_per_region(df_traffic: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame, df_depreg) -> None:
+    def plot_traffic_per_region(df_traffic: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame, df_depreg) -> plt.Figure:
         """This method maps the total daily traffic per region."""
         t_with_r = Data.add_regions_to_departments(df_traffic, df_depreg)
         t_with_r_and_s = Data.add_region_shapes(t_with_r, df_regions).set_geometry('region_geometry')
@@ -722,14 +1051,18 @@ class Plots:
         fig, ax = plt.subplots()
         plot_data.plot(ax=ax, column='tmja', edgecolor='black', legend=True, legend_kwds={'label': 'Traffic per day'})
         ax.set_title('Daily traffic in France')
-        plt.show()
+        return fig
 
     @classmethod
-    def plot_calculated_areas(cls, df_areas: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame) -> None:
+    def plot_calculated_areas(cls, df_areas: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame,
+                              heat_map: bool = False) -> plt.Figure:
         """This method plots the roads on top of France, with a color indicating which area a road section belongs to.
-        df_areas is assumed to contain a geometry column as well as one or more boolean columns starting with 'area_'
-        telling which record belong to which area (as output by Strategies.split_into_areas()), as well as a column
-        'buffer_traffic' (as output by Data.add_buffer_traffic)."""
+        df_traffic_with_area_assignment is assumed to contain a geometry column as well as one or more boolean columns starting with 'area_'
+        telling which record belong to which area (as output by Strategies.split_into_areas()), as well as (optionally)
+        a column 'buffer_traffic' (as output by Data.add_buffer_traffic)."""
+        warnings.warn('This plotting method has been deprecated since the output split_into_n_areas and'
+                      'split_into_areas_fuel_based do not include the required DataFrame anymore.',
+                      DeprecationWarning)
         df_areas = df_areas.copy(deep=True)
         # Creating geometries that represent a buffer of 10 km around the road sections
         df_areas['buffer_geometry'] = df_areas.buffer(10000)
@@ -739,7 +1072,8 @@ class Plots:
         # Drawing the outline of the French regions
         df_regions.plot(ax=ax)
         # The following line would have to be uncommented if one wanted to see a heat map of the traffic
-        # df_areas.plot(ax=ax, column='buffer_traffic', legend=True, cmap='hot')
+        if heat_map:
+            df_areas.plot(ax=ax, column='buffer_traffic', legend=True, cmap='hot')
 
         # Creating list of area columns
         areas = [col for col in df_areas if col.startswith('area_')] + ['no_area']
@@ -761,23 +1095,19 @@ class Plots:
             frameon=False,
             shadow=False)
         fig.tight_layout()
+        return fig
 
     @classmethod
-    def plot_chosen_stations_over_optimal_locations(cls, df_station_distribution: gpd.GeoDataFrame,
-                                                    areas: dict[str, shapely.Polygon],
-                                                    df_regions: gpd.GeoDataFrame) -> None:
-        """This method plots the stations chosen over the locations picked to put a station (the centers of the areas).
-        """
+    def plot_chosen_stations(cls, df_station_distribution: gpd.GeoDataFrame,
+                             df_regions: gpd.GeoDataFrame) -> plt.Figure:
+        """This method displays the chosen locations of the H2 stations in France."""
         fig, ax = plt.subplots()
         df_regions.plot(ax=ax)
-        df_areas = gpd.GeoDataFrame([areas]).T
-        df_areas = df_areas.rename(columns={0: 'geometry'}).set_geometry('geometry')
-        df_areas.centroid.plot(ax=ax, color='red', markersize=10)
         df_station_distribution.plot(ax=ax, color='lightgreen', markersize=10)
-        ax.set_title('Optimal location vs actual station')
+        ax.set_title('H2 charging stations')
         # Adding the legend for the different areas
-        custom_handles = cls._create_legend_handles(colors=['red', 'lightgreen'],
-                                                    labels=['optimal location', 'nearest station'])
+        custom_handles = cls._create_legend_handles(colors=['lightgreen'],
+                                                    labels=['H2 station'])
         existing_handles, _ = ax.get_legend_handles_labels()
         ax.legend(
             handles=[
@@ -789,6 +1119,107 @@ class Plots:
             frameon=False,
             shadow=False)
         fig.tight_layout()
+        return fig
+
+    @classmethod
+    def plot_chosen_stations_over_optimal_locations(cls, df_station_distribution: gpd.GeoDataFrame,
+                                                    df_areas: gpd.GeoDataFrame,
+                                                    df_regions: gpd.GeoDataFrame) -> plt.Figure:
+        """This method plots the stations chosen over the locations picked to put a station (the centers of the areas).
+        """
+        fig, ax = plt.subplots()
+        df_regions.plot(ax=ax)
+        df_areas.centroid.plot(ax=ax, color='red', markersize=10)
+        df_station_distribution.plot(ax=ax, color='lightgreen', markersize=10)
+        ax.set_title('Optimal location vs actual station')
+        # Adding the legend for the different areas
+        custom_handles = cls._create_legend_handles(colors=['red', 'lightgreen'],
+                                                    labels=['Optimal location', 'Nearest station'])
+        existing_handles, _ = ax.get_legend_handles_labels()
+        ax.legend(
+            handles=[
+                *existing_handles,
+                *custom_handles],
+            title="",
+            loc=(1.04, 0.9),
+            ncol=1,
+            frameon=False,
+            shadow=False)
+        fig.tight_layout()
+        return fig
+
+    @staticmethod
+    def plotly_plot_chosen_stations(df_station_distribution: gpd.GeoDataFrame,
+                                    df_regions: gpd.GeoDataFrame) -> go.Figure:
+        """This method mirrors plot_chosen_stations, but the plotly library is used instead of matplotlib."""
+        # Defining that don't want a background: no grid, no axis
+        layout = go.Layout(plot_bgcolor='rgba(0,0,0,0)', xaxis={'visible': False}, yaxis={'visible': False})
+        # Setting up a graph object
+        fig = go.Figure(layout=layout)
+        # Plotting the regions
+        for index, geometry in df_regions['geometry'].items():
+            # Polygons and MultiPolygons have to be treated differently
+            if isinstance(geometry, shapely.Polygon):
+                x, y = geometry.exterior.coords.xy
+                fig.add_trace(go.Scatter(x=list(x), y=list(y),
+                                         fill='toself',
+                                         line={'color': '#444445', 'width': 1},
+                                         fillcolor='rgb(60, 117, 175)',
+                                         mode='lines',
+                                         text=f"Region: {df_regions.loc[index, 'nomnewregi']}",
+                                         hoverinfo='text',
+                                         showlegend=False))
+            else:
+                # MultiPolygons first have to be split up into individual Polygons
+                for p in geometry.geoms:
+                    x, y = p.exterior.coords.xy
+                    fig.add_trace(go.Scatter(x=list(x), y=list(y),
+                                             fill='toself',
+                                             line={'color': '#444445', 'width': 1},
+                                             fillcolor='rgb(60, 117, 175)',
+                                             mode='lines',
+                                             text=f"Region: {df_regions.loc[index, 'nomnewregi']}",
+                                             hoverinfo='text',
+                                             showlegend=False))
+        # Plotting the stations
+        fig.add_trace(go.Scatter(x=df_station_distribution['geometry'].x, y=df_station_distribution['geometry'].y,
+                                 mode='markers',
+                                 line_color='rgb(166, 235, 154)',
+                                 hovertemplate='Location: %{x}, %{y}<extra></extra>',
+                                 # text=df_station_distribution['station'],
+                                 showlegend=True,
+                                 name='H2 station'))
+        # Unsqueezing the plot
+        fig.update_yaxes(scaleanchor="x", scaleratio=1)
+        # Setting the plot title
+        fig.update_layout(title={'text': 'H2 charging stations', 'x': 0.5})
+        return fig
+
+    @classmethod
+    def plotly_plot_chosen_stations_over_optimal_locations(cls, df_station_distribution: gpd.GeoDataFrame,
+                                                           df_areas: gpd.GeoDataFrame,
+                                                           df_regions: gpd.GeoDataFrame) -> go.Figure:
+        """This method mirrors plot_chosen_stations_over_optimal_locations, except that the plotly library is used."""
+        # Loading the figure with the chosen stations
+        fig = cls.plotly_plot_chosen_stations(df_station_distribution, df_regions)
+        # We change the legend entry of the stations
+        fig['data'][-1]['name'] = 'Nearest station'
+        # Adding a trace with the optimal location (which is assumed to be the center of the areas)
+        fig.add_trace(go.Scatter(x=df_areas.centroid.x, y=df_areas.centroid.y,
+                                 mode='markers',
+                                 line_color='red',
+                                 showlegend=True,
+                                 name='Optimal location',
+                                 hoverinfo='skip'))
+        fig.update_layout(title={'text': 'Optimal location vs actual station', 'x': 0.5})
+        # Reordering the traces with the actual stations and the optimal locations to have the actual station in front
+        # Direct assignment is not possible, we need to first turn it into a list from a tuple (which is unchangeable)
+        traces = list(fig['data'])
+        optimal_location_trace = traces[-1]
+        traces[-1] = traces[-2]
+        traces[-2] = optimal_location_trace
+        fig['data'] = tuple(traces)
+        return fig
 
     @staticmethod
     def _create_legend_handles(colors: list[Union[str, tuple[float, float, float, float]]],
