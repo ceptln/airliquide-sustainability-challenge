@@ -9,7 +9,7 @@ import warnings
 import zipfile
 
 import geopandas as gpd
-import shapely
+import math
 from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,6 +20,7 @@ from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.firefox.service import Service
+import shapely
 
 
 class LoadData:
@@ -896,7 +897,7 @@ class Strategies:
 
 class RL:
     def __init__(self, df_their_stations: pd.DataFrame, df_our_stations: pd.DataFrame, df_strategy: pd.DataFrame,
-                 epsilon: float = 0.1, price_h2: float = 4.5):
+                 epsilon: float = 0.1, price_h2: float = 4.5) -> None:
         self.df_a: pd.DataFrame = df_their_stations
         self.df_b: pd.DataFrame = df_our_stations
         self.df_strategy: pd.DataFrame = df_strategy
@@ -1049,8 +1050,8 @@ class RL:
                 self.rew_interim_a = self.reward_a(type_strat_a)
                 self.rew_interim_b = self.reward_b(type_strat_b)
                 self.update(step)
-                self.df_a = pd.merge(self.df_a, self.stat_a, indicator=True, how='outer')\
-                    .query('_merge=="left_only"')\
+                self.df_a = pd.merge(self.df_a, self.stat_a, indicator=True, how='outer') \
+                    .query('_merge=="left_only"') \
                     .drop('_merge', axis=1)
                 self.df_b = self.df_b[~self.df_b.isin(self.choice_b)].dropna()
             if step == 2:
@@ -1073,6 +1074,70 @@ class RL:
             print(x)
             self.game(type_strat_a, type_strat_b)
         return self.stat_a, self.stat_b
+
+
+class LateEntrant:
+    def __init__(self, df_stations: pd.DataFrame, df_strategy2030: pd.DataFrame, df_strategy2040: pd.DataFrame,
+                 pw: int = 15) -> None:
+        self.df_stations: pd.DataFrame = df_stations
+        self.df_stations['round'] = 2025
+        self.strategy_final: pd.DataFrame = df_strategy2030[['region', 'quantity_h2_to_reach']]
+        self.strategy_final['quantity_2040'] = df_strategy2040['quantity_h2_to_reach']
+        self.pw: int = pw
+        self.a: float = 0
+        self.b: float = 0
+        self.xf: np.ndarray = np.zeros(0)
+        self.stations_a: pd.DataFrame = self.df_stations.sample(95)
+        self.df: pd.DataFrame = pd.DataFrame()
+
+    def total_stations_over_time(self) -> None:
+        for i in range(1, 15, 1):
+            stations = self._number_of_stations_evolution(self.xf, self.a, self.b)
+            p = math.ceil(stations[len(stations) - i])
+            p_1 = math.ceil(stations[len(stations) - i - 1])
+            print(p_1 - p)
+            stations_a_inter = self.df_stations.sample(p_1 - p)
+            stations_a_inter['round'] = stations_a_inter['round'] + i
+            self.df_stations = pd.merge(self.df_stations, stations_a_inter, indicator=True, how='outer') \
+                .query('_merge=="left_only"') \
+                .drop('_merge', axis=1)
+            self.stations_a = pd.concat([self.stations_a, stations_a_inter], axis=0)
+            print(len(self.df_stations))
+
+    def count_capacity(self, y) -> None:
+        self.df = self.stations_a[['region_name', 'capacity', 'round']]
+        self.df = self.df[self.df['round'] <= y].groupby(by=['region_name']).sum()
+        self.df['round'] = np.repeat(y, len(self.df))
+
+    def compare_regions(self) -> None:
+        for x in range(2025, 2040, 1):
+            self.count_capacity(x)
+            self.strategy_final = pd.merge(self.strategy_final, self.df, left_on='region', right_on='region_name')
+            self.strategy_final.rename(columns={'capacity': str('capacity_' + str(x)),
+                                                'round': str('round_' + str(x))},
+                                       inplace=True)
+            self.strategy_final[str('diff_' + str(x) + '_for2030')] = (self.strategy_final['quantity_h2_to_reach']
+                                                                       - 1000
+                                                                       * self.strategy_final[str('capacity_' + str(x))])
+            self.strategy_final[str('diff_' + str(x) + '_for2040')] = (self.strategy_final['quantity_2040']
+                                                                       - 1000
+                                                                       * self.strategy_final[str('capacity_' + str(x))])
+
+    def _number_of_stations_evolution(self, x: np.ndarray[float], adj1: float, adj2: float) -> np.ndarray[float]:
+        """This method returns an array with the number of stations for each year in x.
+        The function form is exponential."""
+        return ((x + adj1) ** self.pw) * adj2
+
+    def _create_parameters_distribution_method(self) -> None:
+        """This method creates the parameter for the function that calculations the number of stations per year:
+        _number_of_stations_evolution."""
+        x = [2030, 2040]  # data points to fit for the exponential deployment of stations
+        y = [200, 800]
+        base = np.exp(np.log(y[0] / y[1]) / self.pw)
+
+        self.a = (x[0] - x[1] * base) / (base - 1)
+        self.b = y[0] / (x[0] + self.a) ** self.pw
+        self.xf = np.linspace(2040, 2025, 15)
 
 
 class Accounting:
