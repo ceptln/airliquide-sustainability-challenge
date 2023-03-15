@@ -1,11 +1,17 @@
+from __future__ import annotations
+
+from typing import Union, Any
+
 import geopandas as gpd
 import pandas as pd
 import numpy as np
 import math
+
+
 from ..utils.helpers import Data
 
 
-class production_plants:
+class ProductionPlants:
     def __init__(self):
         self.stations = pd.read_csv(Data.find_file(
             "stations_10000_2030.csv")).drop("Unnamed: 0", axis=1)
@@ -28,12 +34,14 @@ class production_plants:
             self.dfae.e1)].assign(dense=1)]).drop(["geometry", "dense"], axis=1)
 
     @classmethod
-    def __fitness_production(cls, X, stations, num_big, capacity_big, capacity_small):
+    def fitness_production(cls, X: Union[gpd.GeoDataFrame, pd.DataFrame],
+                           stations: Union[gpd.GeoDataFrame, pd.DataFrame],
+                           num_big: int,
+                           capacity_big: Union[int, float],
+                           capacity_small: Union[int, float]) -> list[Any]:
         df = X.copy()
         # x is a df of selected spots
         # we need columns: e1, coords
-        num_prod = df.shape[0]
-        num_small = num_prod - num_big
 
         lsdf = []
         cpdists = []
@@ -86,7 +94,7 @@ class production_plants:
 
         return [antifitness, bigp, smallp]
 
-    def get_best_prod_plants(self, locations, stations, num_prod, num_big, capacity_big, capacity_small, iterations):
+    def get_best_prod_plants(self, num_prod, num_big, capacity_big, capacity_small, iterations):
         locations = self.aires
         stations = self.stations
         best = []
@@ -94,7 +102,7 @@ class production_plants:
             if i % 50 == 0:
                 print(f'iteration{i}')
             temp = locations.sample(num_prod).reset_index(drop=True)
-            fitr = production_plants.__fitness_production(
+            fitr = self.fitness_production(
                 temp, stations, num_big, capacity_big, capacity_small)
             if len(best) == 0 or fitr[0] > best[0]:
                 temp['big'] = [1.0 if x in fitr[1]
