@@ -59,4 +59,14 @@ After finding the best locations for the stations we want to deploy them in a st
 First Scenario : we are in monopoly. Then we just have to define a timeline and build the stations according to two concepts : the score of each station and the fact that we want to spread them so we cover a large part of the territory.
 
 
-Second Scenario : we are in duopolyy. We modelise the competition in a game theory framework with a Multi Agent Reinforcement Learning model where eac player will build stations on the steps of the previously defined timeline
+Second Scenario : we are in duopolyy. We modelise the competition in a game theory framework with a Multi Agent Reinforcement Learning model where each player will build stations on the steps of the previously defined timeline. With some training the model will give us the best deployment strategy taking the other player move into account.
+
+
+Third Scenario : we are late entrant. The competitor already have several stations when we plan to enter the market. We define a synthetic strategy for the competitor and compute the remaining quantity to provide per region to see when is he deadline to enter and be profitable. 
+Then we follow a similar deployment schema than for the duopoly.
+
+## 4- H2 production plants : 
+
+We need to define the number of H2 production plants according the need of our stations for 2030 and 2040 then find their best location. For that we identify the most important features to determine what makes a good location. The main feature being closeness to majority of H2 stations and high traffic roads. 
+
+After defining these features we compute a score for each possible location and perform a grid search on permutations like for the part 2. 
