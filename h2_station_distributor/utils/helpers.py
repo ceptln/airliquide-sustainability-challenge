@@ -1,6 +1,7 @@
 from __future__ import annotations
 import io
 import os
+import random
 import requests
 import time
 from typing import Union
@@ -646,9 +647,6 @@ class Strategies:
         reference = df_traffic[rank_column].argmax()
         # Initialize shape to keep track of all the covered areas
         covered_area = df_traffic.loc[reference, 'geometry'].centroid.buffer(1)
-        # Define a mask that will make sure that we exclude areas we have already covered
-        mask = pd.Series(index=df_traffic.index)
-        mask.loc[:] = False
         # Create a variable to which we will add all created areas
         df_areas = gpd.GeoDataFrame(columns=['priority', 'geometry'], geometry='geometry', crs='EPSG:2154')
         # Create areas until we have reached the desired number
@@ -668,7 +666,8 @@ class Strategies:
             # Alter the geometry of the reference road section to only include parts that have not been covered yet. It
             # is important to note that the removed parts are also not considered in the sizing of a different point
             df_traffic.loc[reference, 'geometry'] = df_traffic.loc[reference, 'geometry'].difference(covered_area)
-            # Create a mask to only use road parts that aren't in covered_area as starting point
+            # Create a mask to only use road parts that aren't in covered_area as starting point, plus a buffer, to make
+            #             # sure it's not directly at the boundary of covered_area
             if buffer < min_buffer:
                 min_buffer = buffer
             mask = df_traffic.difference(covered_area.buffer(min_buffer)).length > 0
@@ -694,6 +693,8 @@ class Strategies:
         well as the range of trucks in 2030.
         station_size is in kg of H2 a station stores"""
         df_traffic = df_traffic.copy(deep=True)
+        # We will later need the DataFrame in sorted order over and over again
+        df_traffic = df_traffic.sort_values(by=rank_column, ascending=False)
         # Calculate the total distance to cover
         distance_to_cover = Data.calculate_total_distance_covered(df_traffic, traffic_column='h2_truck_tmja')
         # Calculate how much distance one station covers
@@ -701,11 +702,13 @@ class Strategies:
         # Initialize variables to keep track of the distance covered by all created areas (=stations)
         total_covered_distance = 0
         created_areas = 0
+        # Initialize variable to keep track of the smallest buffer which will determine the distance from the covered
+        # areas
+        min_buffer = 10 ** 6
         # Define a starting point
         reference = df_traffic[rank_column].argmax()
-        mask = pd.Series(index=df_traffic.index)
-        mask.loc[:] = False
-        mask = mask.astype(bool)
+        # Initialize a shape to keep track of all covered areas
+        covered_area = df_traffic.loc[reference, 'geometry'].centroid.buffer(1)
         # Create a DataFrame to store the created geometries in
         df_areas = gpd.GeoDataFrame(columns=['priority', 'geometry'], geometry='geometry', crs='EPSG:2154')
         # Create new stations until they all together cover distance_to_cover
@@ -716,7 +719,7 @@ class Strategies:
                                                                  target_distance=distance_covered_by_fuel,
                                                                  buffer_step=buffer_step)
             # Reduce that buffer until a station can cover it
-            _, used_records_mask, covered_distance, area = \
+            buffer_size, used_records_mask, covered_distance, area = \
                 cls._size_buffer_for_distance(df_traffic=df_traffic,
                                               index=reference,
                                               target_distance=distance_covered_by_fuel,
@@ -727,15 +730,23 @@ class Strategies:
             # Fill the DataFrame with the results
             df_areas.loc[created_areas, 'geometry'] = area
             df_areas.loc[created_areas, 'priority'] = created_areas + 1
-            # We update the mask such that a road section can have at most one station
-            mask += used_records_mask
+            # Create a shape of all covered areas
+            covered_area = covered_area.union(area)
+            # Alter the geometry of the reference road section to only include parts that have not been covered yet. It
+            # is important to note that the removed parts are also not considered in the sizing of a different point
+            df_traffic.loc[reference, 'geometry'] = df_traffic.loc[reference, 'geometry'].difference(covered_area)
+            # Create a mask to only use road parts that aren't in covered_area as starting point, plus a buffer, to make
+            # sure it's not directly at the boundary of covered_area
+            if buffer_size < min_buffer:
+                min_buffer = buffer_size
+            mask = df_traffic.difference(covered_area.buffer(min_buffer)).length > 0
             # Get a new starting point
-            reference = df_traffic.loc[~mask, rank_column].sort_values(ascending=False).index[0]
+            reference = df_traffic.loc[mask, rank_column].index[0]
             created_areas += 1
             # Inform on the progress
             if created_areas % 50 == 0:
                 print(f'Created areas: {created_areas}, '
-                      f'open records: {(~mask).sum()}')
+                      f'open records: {mask.sum()}')
         return df_areas
 
     @staticmethod
@@ -816,8 +827,8 @@ class Strategies:
         """This method adds a column with the score of each road section, that will then define where a plant is
         going to be built. The score is a weighted sum between the distance of a road section to the nearest body of
         water, the distance of a road section to point and the negative of the H2 truck traffic on a road section.
-        It is assumed that df_hubs_water contains a column with the predicted traffic of H2 trucks called 'h2_truck_tmja'
-        and a column with the distance to the nearest logistic hub called 'distance_to_water'.
+        It is assumed that df_hubs_water contains a column with the predicted traffic of H2 trucks called
+        'h2_truck_tmja' and a column with the distance to the nearest logistic hub called 'distance_to_water'.
         A lower score is BETTER"""
         # Creating the columns for the distance to the point
         df_hubs_water = Data.add_distance_to_point(df_hubs_water, point)
@@ -881,6 +892,187 @@ class Strategies:
                                                                        traffic_column='h2_truck_tmja')
 
         return buffer, mask, covered_distance, area
+
+
+class RL:
+    def __init__(self, df_their_stations: pd.DataFrame, df_our_stations: pd.DataFrame, df_strategy: pd.DataFrame,
+                 epsilon: float = 0.1, price_h2: float = 4.5):
+        self.df_a: pd.DataFrame = df_their_stations
+        self.df_b: pd.DataFrame = df_our_stations
+        self.df_strategy: pd.DataFrame = df_strategy
+        self.choice_a: pd.DataFrame = pd.DataFrame()
+        self.choice_b: pd.DataFrame = pd.DataFrame()
+        self.stat_a: pd.DataFrame = pd.DataFrame()
+        self.stat_b: pd.DataFrame = pd.DataFrame()
+        self.epsilon: float = epsilon
+        self.price_h2: float = price_h2
+        self.tot_reward_a: Union[int, float] = 0
+        self.tot_reward_b: Union[int, float] = 0
+        self.rew_interim_a: Union[int, float] = 0
+        self.rew_interim_b: Union[int, float] = 0
+
+    def explore(self, n: int, player: str) -> pd.DataFrame:
+        """This method returns a random subset of n records from the dataset belonging to player."""
+        if player == 'A':
+            return self.df_a.sample(n)
+        elif player == 'B':
+            return self.df_b.sample(n)
+
+    def exploit(self, n: int, player: str) -> pd.DataFrame:
+        """This method returns a random subset of n records for player='A' (the competition) and the n records with the
+        highest priority (=lowest number in the 'priority' column) for player='B' (us)."""
+        if player == 'A':
+            return self.df_a.sample(n)
+        elif player == 'B':
+            return self.df_b.nsmallest(n, 'priority')
+
+    def select_station(self, n: int, player: str) -> None:
+        """This method selects self.epsilon * 100 % of the time explore and otherwise exploit as methods to create
+        the attributes choice_a and choice_b."""
+        if player == 'A':
+            if random.random() > self.epsilon:
+                self.choice_a = self.exploit(n, player)
+            else:
+                self.choice_a = self.explore(n, player)
+        if player == 'B':
+            if random.random() > self.epsilon:
+                self.choice_b = self.exploit(n, player)
+            else:
+                self.choice_b = self.explore(n, player)
+
+    def payoff_a(self) -> float:
+        """This method updates the columns 'payoff' and 'weight' in the choice_a DataFrame and returns the sum of the
+        updates 'payoff' column."""
+        for i in self.df_strategy['region']:
+            for k, rows in self.choice_a.loc[self.choice_a['region_name'] == i].iterrows():
+                self.choice_a['weight'].loc[k] = (self.choice_a['capacity'].loc[k]
+                                                  / (self.choice_a.loc[
+                                                         self.choice_a['region_name'] == i, 'capacity'].sum()
+                                                     + self.choice_b.loc[
+                                                         self.choice_b['nomnewregi'] == i, 'capacity'].sum()))
+                self.choice_a['payoff'].loc[k] = max((self.choice_a['weight'].loc[k]
+                                                      * self.df_strategy['quantity_h2_to_reach'].loc[
+                                                          self.df_strategy['region'] == i].values[0]
+                                                      * self.price_h2),
+                                                     self.choice_a['capacity'].loc[k] * 1000 * self.price_h2)
+        return sum(self.choice_a['payoff'])
+
+    def payoff_b(self) -> float:
+        """This method updates the columns 'payoff' and 'weight' in the choice_a DataFrame and returns the sum of the
+        updates 'payoff' column."""
+        for i in self.df_strategy['region']:
+            for k, rows in self.choice_b.loc[self.choice_b['nomnewregi'] == i].iterrows():
+                self.choice_b['weight'].loc[k] = (self.choice_b['capacity'].loc[k]
+                                                  / (self.choice_b.loc[
+                                                         self.choice_b['nomnewregi'] == i, 'capacity'].sum()
+                                                     + self.choice_a.loc[
+                                                         self.choice_a['region_name'] == i, 'capacity'].sum()))
+                self.choice_b['payoff'].loc[k] = max((self.choice_b['weight'].loc[k]
+                                                      * self.df_strategy['quantity_h2_to_reach'].loc[
+                                                          self.df_strategy['region'] == i].values[0]
+                                                      * self.price_h2),
+                                                     self.choice_b['capacity'].loc[k] * 1000 * self.price_h2)
+        return sum(self.choice_b['payoff'])
+
+    def reward_a(self, type_strat: str) -> float:
+        """This method calculates the reward of player A by adjusting the output of the payoff_a method. It offers two
+        strategies for the reward calculation: 'safe' and 'bold' which chosen with the parameter type_strat."""
+        reward = self.payoff_a()
+        if type_strat == 'safe':
+            for i in self.df_strategy['region']:
+                reward = reward - 100 * (len(self.choice_a.loc[self.choice_a['region_name'] == i])
+                                         + len(self.choice_b.loc[self.choice_b['nomnewregi'] == i]))
+        elif type_strat == 'bold':
+            reward = reward - (self.payoff_b() / 10)
+        return reward
+
+    def reward_b(self, type_strat: str) -> float:
+        """This method calculates the reward of player B by adjusting the output of the payoff_b method. It offers two
+        strategies for the reward calculation: 'safe' and 'bold' which chosen with the parameter type_strat."""
+        reward = self.payoff_b()
+        if type_strat == 'safe':
+            for i in self.df_strategy['region']:
+                reward = reward - 100 * (len(self.choice_a.loc[self.choice_a['region_name'] == i])
+                                         + len(self.choice_b.loc[self.choice_b['nomnewregi'] == i]))
+        elif type_strat == 'bold':
+            reward = reward - (self.payoff_a() / 10)
+        return reward
+
+    def update(self, step: int) -> None:
+        """This method updates the priority column based on the payoff, the weight and the total reward."""
+        if step > 1:
+            self.choice_a['priority'] = (self.choice_a['priority']
+                                         + ((self.choice_a['payoff']
+                                             + (1000 * self.choice_a['weight'])
+                                             - self.tot_reward_a
+                                             ) * (-1) / 100
+                                            )
+                                         ) / 2
+            self.choice_b['priority'] = (self.choice_b['priority']
+                                         + ((self.choice_b['payoff']
+                                             + (1000 * self.choice_b['weight'])
+                                             - self.tot_reward_b
+                                             ) * (-1) / 100)
+                                         ) / 2
+            self.stat_a = pd.concat([self.stat_a, self.choice_a], axis=0)
+            self.stat_b = pd.concat([self.stat_b, self.choice_b], axis=0)
+        else:
+            self.choice_a['priority'] = (self.choice_a['priority']
+                                         + ((self.choice_a['payoff']
+                                             + (1000 * self.choice_a['weight'])
+                                             - self.rew_interim_a
+                                             ) * (-1) / 100)
+                                         ) / 2
+            self.choice_b['priority'] = (self.choice_b['priority']
+                                         + ((self.choice_b['payoff']
+                                             + (1000 * self.choice_b['weight'])
+                                             - self.rew_interim_b
+                                             ) * (-1) / 100)
+                                         ) / 2
+            self.stat_a = self.choice_a
+            self.stat_b = self.choice_b
+
+    def game(self, type_strat_a: str, type_strat_b: str):
+        """This method runs one training iteration."""
+        for i in [1, 2]:
+            print(i)
+            step = i
+            if step == 1:
+                n = 74
+                for k in ['A', 'B']:
+                    print(k)
+                    self.select_station(n, k)
+                self.choice_a['round'] = 1
+                self.choice_b['round'] = 1
+                self.payoff_a()
+                self.payoff_b()
+                self.rew_interim_a = self.reward_a(type_strat_a)
+                self.rew_interim_b = self.reward_b(type_strat_b)
+                self.update(step)
+                self.df_a = pd.merge(self.df_a, self.stat_a, indicator=True, how='outer')\
+                    .query('_merge=="left_only"')\
+                    .drop('_merge', axis=1)
+                self.df_b = self.df_b[~self.df_b.isin(self.choice_b)].dropna()
+            if step == 2:
+                for k in ['A', 'B']:
+                    n = 74
+                    print(k)
+                    self.select_station(n, k)
+                self.choice_a['round'] = 2
+                self.choice_b['round'] = 2
+                self.payoff_a()
+                self.payoff_b()
+                self.tot_reward_a = self.rew_interim_a + self.reward_a(type_strat_a)
+                self.tot_reward_b = self.rew_interim_b + self.reward_b(type_strat_b)
+                self.update(step)
+
+    def training(self, batches: int, type_strat_a: str, type_strat_b: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """This method can be used to train the model. The output will be the station distribution of player A and
+        player B with the priority of each station."""
+        for x in range(batches):
+            print(x)
+            self.game(type_strat_a, type_strat_b)
+        return self.stat_a, self.stat_b
 
 
 class Accounting:
@@ -1057,9 +1249,9 @@ class Plots:
     def plot_calculated_areas(cls, df_areas: gpd.GeoDataFrame, df_regions: gpd.GeoDataFrame,
                               heat_map: bool = False) -> plt.Figure:
         """This method plots the roads on top of France, with a color indicating which area a road section belongs to.
-        df_traffic_with_area_assignment is assumed to contain a geometry column as well as one or more boolean columns starting with 'area_'
-        telling which record belong to which area (as output by Strategies.split_into_areas()), as well as (optionally)
-        a column 'buffer_traffic' (as output by Data.add_buffer_traffic)."""
+        df_traffic_with_area_assignment is assumed to contain a geometry column as well as one or more boolean columns
+        starting with 'area_' telling which record belong to which area (as output by Strategies.split_into_areas()),
+        as well as (optionally) a column 'buffer_traffic' (as output by Data.add_buffer_traffic)."""
         warnings.warn('This plotting method has been deprecated since the output split_into_n_areas and'
                       'split_into_areas_fuel_based do not include the required DataFrame anymore.',
                       DeprecationWarning)
@@ -1131,10 +1323,10 @@ class Plots:
         df_regions.plot(ax=ax)
         df_areas.centroid.plot(ax=ax, color='red', markersize=10)
         df_station_distribution.plot(ax=ax, color='lightgreen', markersize=10)
-        ax.set_title('Optimal location vs actual station')
+        ax.set_title('Initial location vs actual station')
         # Adding the legend for the different areas
         custom_handles = cls._create_legend_handles(colors=['red', 'lightgreen'],
-                                                    labels=['Optimal location', 'Nearest station'])
+                                                    labels=['Initial location', 'Optimized station'])
         existing_handles, _ = ax.get_legend_handles_labels()
         ax.legend(
             handles=[
@@ -1184,7 +1376,7 @@ class Plots:
         # Plotting the stations
         fig.add_trace(go.Scatter(x=df_station_distribution['geometry'].x, y=df_station_distribution['geometry'].y,
                                  mode='markers',
-                                 line_color='rgb(166, 235, 154)',
+                                 line={'color': 'rgb(166, 235, 154)'},
                                  hovertemplate='Location: %{x}, %{y}<extra></extra>',
                                  # text=df_station_distribution['station'],
                                  showlegend=True,
@@ -1203,15 +1395,15 @@ class Plots:
         # Loading the figure with the chosen stations
         fig = cls.plotly_plot_chosen_stations(df_station_distribution, df_regions)
         # We change the legend entry of the stations
-        fig['data'][-1]['name'] = 'Nearest station'
+        fig['data'][-1]['name'] = 'Optimized station'
         # Adding a trace with the optimal location (which is assumed to be the center of the areas)
         fig.add_trace(go.Scatter(x=df_areas.centroid.x, y=df_areas.centroid.y,
                                  mode='markers',
-                                 line_color='red',
+                                 line={'color': 'red'},
                                  showlegend=True,
-                                 name='Optimal location',
+                                 name='Initial location',
                                  hoverinfo='skip'))
-        fig.update_layout(title={'text': 'Optimal location vs actual station', 'x': 0.5})
+        fig.update_layout(title={'text': 'Initial location vs actual station', 'x': 0.5})
         # Reordering the traces with the actual stations and the optimal locations to have the actual station in front
         # Direct assignment is not possible, we need to first turn it into a list from a tuple (which is unchangeable)
         traces = list(fig['data'])

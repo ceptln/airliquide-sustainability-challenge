@@ -1,0 +1,14 @@
+,region,quantity_h2_to_reach,quantity_h2_proposed,small,medium,large,total
+0,Auvergne-Rhône-Alpes,41995,42000,8,6,2,16
+1,Bourgogne-Franche-Comté,17826,18000,4,2,1,7
+2,Bretagne,7479,8000,1,2,0,3
+3,Centre-Val de Loire,7985,8000,1,2,0,3
+4,Grand Est,17201,18000,4,2,1,7
+5,Hauts-de-France,9722,10000,2,2,0,4
+6,Normandie,9338,10000,2,2,0,4
+7,Nouvelle-Aquitaine,20772,21000,4,3,1,8
+8,Occitanie,15763,16000,3,2,1,6
+9,Pays de la Loire,6901,7000,2,1,0,3
+10,Provence-Alpes-Côte d'Azur,8152,10000,2,2,0,4
+11,Île-de-France,22183,23000,5,3,1,9
+12,Total,185317,191000,38,29,7,74
