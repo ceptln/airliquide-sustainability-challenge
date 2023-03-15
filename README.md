@@ -1,8 +1,8 @@
 # airliquide-sustainability-challenge
 
-## About the data :
+# About the data :
 
-# 1- Government data
+## 1- Government data
 
 File in shp format, necessary to keep the four other files with same name in different formats to correctly load it.
 
@@ -20,7 +20,7 @@ traffic : data on the traffic per road section including heavytrucks
 cities : data on the name and region of each city of France
 
 
-# 2- Other CSV files 
+## 2- Other CSV files 
 
 Complementary data about the corresponding region to each department & the location of gas station already existing.
 
@@ -37,21 +37,21 @@ There are no national roads in Corsica so we might not want to include this regi
 
 
 
-## Analysis steps :
+# Analysis steps :
 
-# 1- Number of stations per region :
+## 1- Number of stations per region :
 
 Compute the number of stations per region for 2030 and 2040 given the need in H2.
 
 Flexible model with a set of parameters that can be adapted to the scenario wanted (more explanations in the streamlit app).
 
-# 2- Location of the stations :
+## 2- Location of the stations :
 
 Given the number of stations found in the previous part we try to find the best location for each station.
 
 This relies on the capacity of the station, the traffic on the roads, the proximity to trucks activity areas. With these data we compute a fitness score to define best stations and then grid search the best permutations of these stations accross the possible points on the roads per region given the optimal number of stations from part 1.
 
-# 3- Deployment plan :
+## 3- Deployment plan :
 
 After finding the best locations for the stations we want to deploy them in a strategic timeline and simulate that in different competition scenarios.
 
