@@ -109,7 +109,7 @@ for index, row in output.iterrows():
         color = "blue"
     else:
         color = "green"
-    folium.Marker([x, y], tooltip=type, popup=type, color=color).add_to(m)
+    folium.Marker([x, y], tooltip=type, popup=type, icon=folium.Icon(color=color, icon="glyphicon-flash")).add_to(m)
 
 
 out = st_folium(m, width=1200, height=500)
